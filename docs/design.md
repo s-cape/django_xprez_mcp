@@ -129,13 +129,19 @@ from xprez_mcp import ModelProvider, mcp, tool
 
 @mcp.register(Client)
 class ClientProvider(ModelProvider):
-    serializer = ClientSerializer          # or fields = [...]
+    fields = ["slug", "name", "industry"]  # or serializer = ClientSerializer (DRF)
     detail_serializer = ClientDetailSerializer
     lookup_field = "slug"
-    search_fields = ["name", "group"]
-    filters = ["industry__name", "country__name"]
+    search_fields = ["name", "group"]      # admin-style; or override search()
+    filters = {
+        "industry": "industry__name__icontains",
+        "country": filter_country,         # f(ctx, queryset, value) -> queryset
+    }
+    ordering = ["name"]
     actions = ["list", "get"]              # opt in to create/update/delete
     resources = True                       # crm://clients, crm://clients/{slug}
+    resource_scheme = "crm"                # default: the model's app label
+    tool_names = {"list": "clients_search", "get": "client_get"}  # optional
 
     def get_queryset(self, ctx):
         return Client.objects.visible_to(ctx.user)
@@ -147,8 +153,58 @@ class ClientProvider(ModelProvider):
     def assignments(self, ctx, slug: str): ...
 ```
 
-Writes go through `perform_create` / `perform_update` / `perform_delete`, so
-projects with a service layer keep it.
+| Action | Arguments | Hints |
+|---|---|---|
+| `list` | `query`, filters, `limit`, `cursor` | read-only |
+| `get` | lookup | read-only |
+| `create` | writable fields | |
+| `update` | lookup, partial fields | idempotent |
+| `delete` | lookup | destructive |
+
+- Only `list` and `get` are on by default.
+- Default tool names are `<plural>_<action>` (`clients_list`, `clients_get`),
+  the plural being the slugified `verbose_name_plural`. `tool_names`
+  overrides single actions.
+- `fields` or `serializer` is required. Without either the provider raises
+  `ImproperlyConfigured` instead of exposing every field.
+- `serializer` is anything called as
+  `serializer(instance, many=..., context=...)` with a `.data` attribute (DRF
+  serializers). The context carries `ctx`,
+  `request` and `user`. DRF is imported only when used, and its
+  `ValidationError`, `NotFound` and `PermissionDenied` map to readable errors.
+- `list` returns `{"results", "count", "next_cursor"}`. The cursor is an
+  opaque offset, so the server stays stateless. Default limit 20, maximum 100.
+- Writes are validated by the DRF serializer when there is one, otherwise by a
+  `ModelForm` built from `fields`. Cleaned data goes through `perform_create` /
+  `perform_update` / `perform_delete`, so projects with a service layer keep it.
+- Generated tools are ordinary items. Excludes, `unregister_tool`, permissions
+  and `mcp_inspect` treat them like decorated ones. Their schemas come from the
+  model fields through the same machinery as type hints.
+
+#### Exposure: tools per model or generic
+
+How model providers appear is a server option; the providers stay the same.
+
+```python
+mcp = MCPServer(models="tools")    # default: clients_list, clients_get, ...
+staff_mcp = MCPServer(models="generic")
+```
+
+Tools per model have precise schemas and descriptions and suit a small,
+curated set. With many models they flood the client's context, so generic mode
+exposes a fixed set instead, however many models are registered:
+
+| Tool | What it does |
+|---|---|
+| `models_list` | Models this user can use, with fields, filters and actions |
+| `records_search(model, query, filters, limit, cursor)` | `list` of one model |
+| `record_get(model, id)` | `get` of one model |
+| `record_create` / `record_update` / `record_delete` | Present only when some model allows the action |
+
+`model` is an enum built per user from the providers they pass, so
+`tools/list` still hides what they cannot use. Filters and fields are checked
+per call against that model's provider; an invalid one returns the valid
+options so the model can retry.
 
 ### Admin *(planned, phase 3)*
 
@@ -161,13 +217,14 @@ mcp.register(Client, AdminProvider.from_admin(ClientAdmin, actions=["list", "get
 mcp.register_admin(
     admin.site,
     exclude=[LogEntry],
-    mode="generic",  # list_models / describe_model / query_model instead of tools per model
+    mode="generic",  # the generic model tools from phase 2 instead of tools per model
 )
 ```
 
 `AdminProvider` builds a request-like object for the caller and delegates to
 `get_queryset`, `has_view/add/change/delete_permission`, `get_search_results`,
 `list_filter`, the admin form, `save_model` / `save_related` and `LogEntry`.
+The admin permissions are applied here, not in `ModelProvider`.
 Admin code that needs more of a real request (sessions, messages) needs a
 fallback; to be designed in phase 3.
 
@@ -213,15 +270,78 @@ and registers them itself, the way a custom `AdminSite` does.
 
 ## Permissions
 
-An item is visible and callable when both hold:
+Closed by default: a server nobody configured lets nobody in.
+
+A permission is always one of: a permission string (`user.has_perm`), a list
+of them (all required) or a callable `permission(ctx) -> bool`.
+
+### Server access *(planned, phase 2)*
+
+```python
+XPREZ_MCP = {"PERMISSION": "crm.use_mcp"}  # required, no default
+
+sales_mcp = MCPServer(permission=lambda ctx: ctx.user.is_salesperson)
+```
+
+- Checked after authentication and before any method, `initialize` included.
+  A user who fails it gets `403`, so the client fails when it connects
+  instead of seeing an empty catalog.
+- Without a permission (neither the setting nor the argument), a system check
+  error (`xprez_mcp.E001`) fails `manage.py check`, `runserver` and tests, and
+  the server answers `403` in case checks are skipped.
+- Opening up is explicit and visible in review:
+  `xprez_mcp.permissions.allow_authenticated`, `allow_staff` and `allow_any`.
+  `allow_anonymous=True` also needs `allow_any`; on its own it no longer
+  opens the server.
+- No bundled `use_mcp` permission: that would need a model and a migration.
+  Projects use one of their own.
+
+### Items
+
+Past the server check, an item is visible and callable when both hold:
 
 1. `provider.has_permission(ctx)` is true (providers only; default `True`).
-2. The item's `permission` passes: a permission string (`user.has_perm`), a
-   list of them (all required) or a callable `permission(ctx) -> bool`.
+2. The item's `permission` passes (default: none).
 
 Items that fail are left out of `*/list` and behave as unknown on call, so
-their existence does not leak. Row-level rules belong in `get_queryset` (phase
-2) or in the item's own code.
+their existence does not leak. Row-level rules belong in `get_queryset` or in
+the item's own code.
+
+### Models *(planned, phase 2)*
+
+Models sit below the admin and views, so `ModelProvider` adds no permission
+check of its own, Django's model permissions included. The server permission,
+`get_queryset` (which rows exist for the user) and opting in to writes are
+the defaults. `create` is not limited by the queryset, so enabling it without
+a permission lets every user who passes the server check create records.
+
+```python
+class ClientProvider(ModelProvider):
+    actions = ["list", "get", "update", "delete"]
+    permissions = {                    # per action, hides the tool
+        "update": "clients.change_client",
+        "delete": lambda ctx: ctx.user.is_superuser,
+    }
+    # permissions = ModelProvider.django_model_permissions  # view/add/change/delete
+
+    def has_action_permission(self, ctx, action):
+        return super().has_action_permission(ctx, action)
+
+    def has_object_permission(self, ctx, action, instance):  # after the fetch
+        return action == "get" or instance.owner_id == ctx.user.pk
+```
+
+A failed action permission hides the tool. A failed object permission is a
+readable `PermissionDenied`: the user can already see the row. In generic
+mode the `model` enum and the presence of each record tool follow the same
+checks.
+
+### Order of checks
+
+Authentication (`401`) → server permission (`403`) → `provider.has_permission`
+and the item or action permission (hidden) → `get_queryset` (not found) →
+`has_object_permission` (`PermissionDenied`) → the call or `perform_*`. Each
+layer can only narrow the one before it.
 
 ## Schemas and arguments
 
@@ -288,6 +408,7 @@ OAuth (protected resource metadata, RFC 9728) is planned for later.
 XPREZ_MCP = {
     "NAME": "django",              # serverInfo.name of the default server
     "VERSION": "0.0.0",
+    "PERMISSION": None,            # required (phase 2); see Permissions
     "AUTODISCOVER": True,
     "AUTODISCOVER_MODULE": "mcp",
     "AUTHENTICATION": ["xprez_mcp.auth.bearer_token"],
@@ -309,10 +430,22 @@ XPREZ_MCP = {
    `@prompt` / completions, `CallContext`, schemas from type hints, error
    mapping, stateless view, pluggable auth, Origin check, autodiscovery,
    excludes, `mcp_inspect`. Proven in a project.
-2. **Models**: `ModelProvider`, `get_queryset(ctx)`, `perform_*` hooks,
-   serializers (DRF optional), generated resources, pagination.
-3. **Admin and third-party**: `AdminProvider`, `register_admin`, generic mode,
-   write policy for third-party providers.
+2. **Models**: required server permission, `ModelProvider`,
+   `get_queryset(ctx)`, `perform_*` hooks, serializers (DRF optional),
+   generated resources, pagination, generic mode. Released as 0.2.0; the
+   required permission breaks 0.1.0 configurations. Steps, one PR each:
+   1. Server permission, `allow_*` helpers, system check.
+   2. Generated items; `ModelProvider` with `list` / `get`, `fields`,
+      `get_queryset`, lookup; test models.
+   3. Search, filters, ordering, pagination.
+   4. Generic mode.
+   5. Generated resources and completion.
+   6. Writes: `ModelForm` validation, `perform_*`, action and object
+      permissions.
+   7. DRF serializers and error mapping; a CI job with DRF installed.
+   8. Docs, release.
+3. **Admin and third-party**: `AdminProvider`, `register_admin` (reusing the
+   generic mode), write policy for third-party providers.
 4. **Advanced**: audiences (one catalog, per-audience wording), composite tools
    generated from other items (a `batch_update` over several tools),
    confirmation policies (`flag`, `deferred` approval, `elicit`), export as
@@ -325,6 +458,8 @@ XPREZ_MCP = {
 - Third-party providers: expose reads by default and require opt-in for
   writes, or require opt-in for everything?
 - Should admin-based providers be limited to staff by default?
+- Mixing exposures on one server (a few models as their own tools, the rest
+  generic)?
 - Pagination for `*/list` methods once catalogs get large.
 - Tool name rules: enforce the MCP character set at registration?
 
