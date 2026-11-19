@@ -400,11 +400,19 @@ class InlineOfInheritedParentTests(TestCase):
     def test_get_includes_inline_rows(self):
         class SwatchInline(admin.TabularInline):
             model = Swatch
-            fields = [("hex",)]  # grouped, as on one admin row
+            fields = [("hex", "source")]  # grouped, as on one admin row
+            readonly_fields = ["source"]
+
+            def source(self, obj):  # the admin shows its empty value
+                raise Tag.DoesNotExist
 
         class ColoredTagAdmin(admin.ModelAdmin):
             fields = [("name", "color")]
+            list_display = ["name", "broken"]
             inlines = [SwatchInline]
+
+            def broken(self, obj):
+                raise Tag.DoesNotExist
 
         local_site = admin.AdminSite(name="inherited")
         local_site.register(ColoredTag, ColoredTagAdmin)
@@ -421,8 +429,10 @@ class InlineOfInheritedParentTests(TestCase):
         self.assertEqual(data["color"], "#f00")  # a Hue, sent as its string
         self.assertEqual(
             data["inlines"]["swatches"],
-            {"results": [{"id": swatch.pk, "hex": "#f00"}], "count": 1},
+            {"results": [{"id": swatch.pk, "hex": "#f00", "source": None}], "count": 1},
         )
         described = provider.describe(ctx)
         self.assertEqual(described["lookup"], "tag_ptr")
-        self.assertEqual(described["inlines"]["swatches"]["fields"], ["hex"])
+        self.assertEqual(described["inlines"]["swatches"]["fields"], ["hex", "source"])
+        rows = provider.serialize(ctx, ColoredTag.objects.all(), many=True)
+        self.assertIsNone(rows[0]["broken"])

@@ -20,6 +20,7 @@ from django.contrib.messages.storage.base import BaseStorage
 from django.core.exceptions import (
     FieldDoesNotExist,
     ImproperlyConfigured,
+    ObjectDoesNotExist,
     PermissionDenied,
 )
 from django.db import models, transaction
@@ -365,14 +366,22 @@ class AdminProvider(ModelProvider):
         model_admin = model_admin or self.model_admin
         if name == "display":
             return str(instance)
+        # errors the admin shows as its empty value: the changelist catches
+        # ObjectDoesNotExist, read-only fields AttributeError and ValueError too
         if model_admin is self.model_admin and name in self.display_callables:
-            return plain(self.display_callables[name](instance))
+            try:
+                return plain(self.display_callables[name](instance))
+            except ObjectDoesNotExist:
+                return None
         try:
             instance._meta.get_field(name)
         except FieldDoesNotExist:
             if name == "pk":
                 return instance.pk
-            _, _, value = lookup_field(name, instance, model_admin)
+            try:
+                _, _, value = lookup_field(name, instance, model_admin)
+            except (AttributeError, ValueError, ObjectDoesNotExist):
+                return None
             return plain(value)
         # field types with their own value classes (timezones, money, ...)
         return plain(super().field_value(instance, name))
