@@ -37,7 +37,7 @@ that does not exist yet.
 | `MCPServer` | A registry plus an HTTP endpoint. `xprez_mcp.mcp` is the default instance; create more for curated audiences. |
 | `Provider` | A class whose `@tool`, `@resource` and `@prompt` methods are exposed. Registered under a key (a provider class or a model). |
 | `ModelProvider` | A provider generated from a model: list/get/create/update/delete, resources per object. |
-| `AdminProvider` *(planned)* | A provider generated from a `ModelAdmin`, reusing its permissions, queryset, search, filters and form. |
+| `AdminProvider` *(planned)* | A `ModelProvider` driven by a `ModelAdmin`: exactly the admin's permissions, plus its queryset, search, filters, form and history. |
 | `CallContext` (`ctx`) | Passed to every call: server, request, user, protocol version. Projects can subclass it. |
 | Item | One registered tool, resource or prompt. Identified by its name (tools, prompts) or URI (resources). |
 
@@ -212,6 +212,15 @@ mcp = MCPServer(models="tools")    # default: clients_list, clients_get, ...
 staff_mcp = MCPServer(models="generic")
 ```
 
+*(planned, phase 3)* A provider can override the server default, so a few
+curated models keep their own tools while the rest of the admin goes generic
+on the same server:
+
+```python
+class ClientProvider(ModelProvider):
+    exposure = "tools"  # "tools" | "generic" | None (the server's models=)
+```
+
 Tools per model have precise schemas and descriptions and suit a small,
 curated set. With many models they flood the client's context, so generic mode
 exposes a fixed set instead, however many models are registered:
@@ -236,21 +245,86 @@ model providers are exposed as usual. Two model providers with the same
 from django.contrib import admin
 from xprez_mcp import AdminProvider, mcp
 
-mcp.register(Client, AdminProvider.from_admin(ClientAdmin, actions=["list", "get", "update"]))
+# one model, from the ModelAdmin registered on admin.site
+@mcp.register(Client)
+class ClientAdminProvider(AdminProvider):
+    actions = ["list", "get", "update"]
+    admin_actions = ["mark_active"]  # ModelAdmin actions, opt-in
 
+# the whole admin
 mcp.register_admin(
     admin.site,
-    exclude=[LogEntry],
-    mode="generic",  # the generic model tools from phase 2 instead of tools per model
+    exclude=[LogEntry],          # models (or app labels)
+    actions=["list", "get"],     # default; writes are opt-in, per model too:
+    model_actions={Client: ["list", "get", "update"]},
+    exposure="generic",          # the phase 2 generic tools
 )
 ```
 
-`AdminProvider` builds a request-like object for the caller and delegates to
-`get_queryset`, `has_view/add/change/delete_permission`, `get_search_results`,
-`list_filter`, the admin form, `save_model` / `save_related` and `LogEntry`.
-The admin permissions are applied here, not in `ModelProvider`.
-Admin code that needs more of a real request (sessions, messages) needs a
-fallback; to be designed in phase 3.
+**Permissions are exactly the admin's.** A user can do through an
+`AdminProvider` what they can do in that admin, never more; `AdminProvider`
+adds no rules of its own and replaces `ModelProvider.permissions`:
+
+| Layer | Delegates to |
+|---|---|
+| Provider (`has_permission`) | `admin_site.has_permission(request)` (active staff by default, or the site's override) and `model_admin.has_module_permission(request)` |
+| `list`, `get` | `has_view_or_change_permission(request)` |
+| `create` | `has_add_permission(request)` |
+| `update`, `delete` | `has_change_permission` / `has_delete_permission(request)`, then again with `obj` after the fetch |
+| Rows | `get_queryset(request)` |
+| Fields | `get_fields` / `get_readonly_fields(request, obj)` per call |
+| Admin actions | `get_actions(request)`, including each action's `allowed_permissions` |
+
+Which actions are *exposed* is a separate, opt-in choice: only `list` and
+`get` by default, as for `ModelProvider`. A permission granted in the admin
+therefore never adds a write tool on its own.
+
+**Mapping.** `AdminProvider` is a `ModelProvider` whose hooks call the
+`ModelAdmin`:
+
+- `fields` (list results): `list_display` entries that are model fields,
+  properties or admin/model methods; `__str__` becomes `display`. The lookup
+  field is always included. `detail_fields` (`get` and write results): the
+  admin's fields and readonly fields. Both can be overridden as usual.
+- Search: `get_search_results(request, queryset, query)`, with `distinct()`
+  when it may return duplicates. `query` exists when the admin has
+  `search_fields`.
+- Filters: `list_filter` entries. A field name becomes a filter typed by the
+  field (choices as an enum, relations by pk, booleans, dates as `__gte` /
+  `__lte` pairs). A `SimpleListFilter` becomes an argument whose enum is its
+  `lookups(request, model_admin)`, applied with `queryset(request, qs)`.
+  Unsupported entries are skipped and reported by `mcp_inspect`.
+- Ordering: `get_ordering(request)`.
+- Writes: the schema comes from the admin's static `fields` / `fieldsets`
+  minus `readonly_fields`. Per call, sending a field that
+  `get_readonly_fields(request, obj)` or `get_fields(request, obj)` excludes
+  is an error. Validation uses `get_form(request, obj, fields=sent)`; then
+  `save_form`, `save_model`, `save_related` (no formsets), and
+  `log_addition` / `log_change` with `construct_change_message`, so the
+  admin history shows the change. `delete` uses `delete_model` and logs the
+  deletion. All inside a transaction.
+- Admin actions (`admin_actions`, opt-in): one `<name>_action(action, ids)`
+  tool per model, `record_action(model, action, ids)` in generic mode. The
+  `action` enum is built per user from `get_actions(request)`. Actions that
+  return a response (an intermediate page, a download) are not supported;
+  `delete_selected` is never exposed.
+
+**The request.** Admin methods get a copy of the MCP request
+(`get_admin_request(ctx, action)`): `user` is the caller, `method` is `GET`
+for reads and `POST` for writes, `GET` / `POST` are empty, `current_app` is
+the site's name. Its message storage collects what `message_user` /
+`messages.*` add, and those messages are returned in the result
+(`"messages": [...]`). `request.session` is whatever the middleware set;
+admin code that needs one fails without session middleware.
+
+**`register_admin`** creates an `AdminProvider` subclass for every model in
+the site's registry, when the catalog is built (so it does not depend on the
+order of autodiscovery). Models registered on the server explicitly win;
+`exclude` removes models or apps; `provider_class` sets the base class.
+`exposure` sets the providers' `exposure`.
+
+Not in phase 3: inlines and formsets (ignored on write, not shown on
+`get`), admin views beyond the changelist and change form, `list_editable`.
 
 ### Unregistering and third-party apps
 
@@ -273,7 +347,18 @@ XPREZ_MCP = {
 }
 ```
 
-Policy for third-party writes (opt-in vs. opt-out) is open; see open questions.
+*(planned, phase 3)* Writes from third-party apps are opt-in. A tool that is
+not `read_only` and comes from an app installed as a package (its path under
+`site-packages` / `dist-packages`) is left out until the app is allowed:
+
+```python
+XPREZ_MCP = {"ALLOW_WRITES": ["taggit", "filer"]}  # app labels, globs allowed
+```
+
+Reads, resources and prompts are exposed by default. Per server,
+`MCPServer(allow_writes=[...])` adds to the setting. `mcp_inspect` lists the
+held back tools. `register_admin` providers count as the project's own: their
+writes are already opt-in through `actions`.
 
 ### Several servers
 
@@ -480,8 +565,11 @@ servers that share a name, including two unnamed ones falling back to `NAME`.
    `ModelProvider`, `get_queryset(ctx)`, `perform_*` hooks, serializers (DRF
    optional), generated resources, pagination, generic mode. Released as 0.2.0;
    the required permission breaks 0.1.0 configurations.
-3. **Admin and third-party**: `AdminProvider`, `register_admin` (reusing the
-   generic mode), write policy for third-party providers.
+3. **Admin and third-party** (planned): `AdminProvider` with the admin's
+   permissions, querysets, search, `list_filter`, forms, `save_model` and
+   `LogEntry`; admin actions (opt-in); `register_admin`; per-provider
+   `exposure`; opt-in writes for third-party apps (`ALLOW_WRITES`). Released as
+   0.3.0, without breaking changes.
 4. **Advanced**: audiences (one catalog, per-audience wording), composite tools
    generated from other items (a `batch_update` over several tools),
    confirmation policies (`flag`, `deferred` approval, `elicit`), export as
@@ -491,11 +579,7 @@ servers that share a name, including two unnamed ones falling back to `NAME`.
 
 ## Open questions
 
-- Third-party providers: expose reads by default and require opt-in for
-  writes, or require opt-in for everything?
-- Should admin-based providers be limited to staff by default?
-- Mixing exposures on one server (a few models as their own tools, the rest
-  generic)?
+- Admin inlines: expose them on `get`, and later as nested writes?
 - Pagination for `*/list` methods once catalogs get large.
 - Tool name rules: enforce the MCP character set at registration?
 
