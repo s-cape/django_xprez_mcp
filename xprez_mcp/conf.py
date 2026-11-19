@@ -3,6 +3,7 @@ from django.conf import settings
 DEFAULTS = {
     "NAME": "django",
     "VERSION": "0.0.0",
+    "PERMISSION": None,
     "AUTODISCOVER": True,
     "AUTODISCOVER_MODULE": "mcp",
     "AUTHENTICATION": ["xprez_mcp.auth.bearer_token"],

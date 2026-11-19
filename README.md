@@ -4,13 +4,16 @@ Admin-style MCP servers for Django. Register providers, models, admin classes
 and plain functions on a server; they become MCP tools, resources and prompts,
 filtered by the calling user's permissions.
 
-Early development: phase 1 (core) only. See [docs/design.md](docs/design.md)
-for the full design and roadmap.
+Early development: phases 1 (core) and 2 (models). See
+[docs/design.md](docs/design.md) for the full design and roadmap.
 
 ```python
 # settings.py
 INSTALLED_APPS = [..., "xprez_mcp"]
-XPREZ_MCP = {"TOKEN_RESOLVER": "myapp.tokens.resolve"}  # (request, token) -> user | None
+XPREZ_MCP = {
+    "TOKEN_RESOLVER": "myapp.tokens.resolve",  # (request, token) -> user | None
+    "PERMISSION": "myapp.use_mcp",  # required: who may use the server at all
+}
 
 # urls.py
 from xprez_mcp import mcp
@@ -47,6 +50,26 @@ class NotesProvider(Provider):
 def ping(ctx) -> str:
     return "pong"
 ```
+
+```python
+# myapp/mcp.py: tools generated from a model
+from xprez_mcp import ModelProvider, mcp
+
+
+@mcp.register(Note)
+class NoteProvider(ModelProvider):
+    fields = ["id", "title", "created"]
+    search_fields = ["title"]
+    filters = {"created_after": "created__gte"}
+    actions = ["list", "get", "update"]  # notes_list, notes_get, notes_update
+
+    def get_queryset(self, ctx):
+        return Note.objects.filter(owner=ctx.user)
+```
+
+With many models, `MCPServer(models="generic")` exposes them through a few
+shared tools (`models_list`, `records_search`, `record_get`, ...) instead of
+tools per model.
 
 ## Development
 

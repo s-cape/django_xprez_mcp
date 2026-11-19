@@ -18,6 +18,7 @@ MIDDLEWARE = [
 ]
 XPREZ_MCP = {
     "NAME": "test",
+    "PERMISSION": "authenticated",
     "TOKEN_RESOLVER": "xprez_mcp.tests.testapp.tokens.resolve",
     "EXCLUDE": ["hidden_*"],
 }

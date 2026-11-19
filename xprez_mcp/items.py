@@ -73,6 +73,10 @@ class ToolSpec(Spec):
     def input_schema(self):
         return self.raw_input_schema or schema.signature_schema(self.func)
 
+    def get_input_schema(self, ctx):
+        """The schema shown to ``ctx``'s user; generated tools may vary it."""
+        return self.input_schema
+
     def parse_arguments(self, arguments):
         if self.raw_input_schema is not None:
             schema.validate_json(self.raw_input_schema, arguments or {})

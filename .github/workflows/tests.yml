@@ -37,3 +37,16 @@ jobs:
           cache: pip
       - run: pip install -e . "Django~=${{ matrix.django }}.0"
       - run: python -m django test xprez_mcp.tests --settings=xprez_mcp.tests.settings
+
+  test-drf:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+          cache: pip
+      - run: pip install -e . "Django~=5.2.0" djangorestframework
+      - run: python -m django test xprez_mcp.tests --settings=xprez_mcp.tests.settings

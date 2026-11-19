@@ -12,6 +12,7 @@ from .errors import (
     RpcError,
     ToolError,
 )
+from .model_provider import ModelProvider
 from .providers import Provider
 from .results import ToolResult
 from .server import MCPServer, mcp
@@ -27,6 +28,7 @@ __all__ = [
     "CallContext",
     "InvalidArguments",
     "MCPServer",
+    "ModelProvider",
     "NotRegistered",
     "Provider",
     "RpcError",

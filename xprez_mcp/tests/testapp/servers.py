@@ -9,7 +9,9 @@ staff_mcp = MCPServer(
 )
 staff_mcp.register(StaffProvider)
 
-open_mcp = MCPServer(name="open", authentication=[], allow_anonymous=True)
+open_mcp = MCPServer(
+    name="open", authentication=[], allow_anonymous=True, permission="any"
+)
 
 
 @open_mcp.tool

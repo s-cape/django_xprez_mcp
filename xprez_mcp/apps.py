@@ -9,5 +9,7 @@ class XprezMCPConfig(AppConfig):
     verbose_name = "Xprez MCP"
 
     def ready(self):
+        from . import checks  # noqa: F401  (registers the system checks)
+
         if conf.get("AUTODISCOVER"):
             autodiscover_modules(conf.get("AUTODISCOVER_MODULE"))

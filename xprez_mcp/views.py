@@ -10,7 +10,6 @@ from django.utils.decorators import method_decorator
 from django.views import View
 from django.views.decorators.csrf import csrf_exempt
 
-from . import conf
 from .errors import (
     INTERNAL_ERROR,
     INVALID_REQUEST,
@@ -35,12 +34,11 @@ def rpc_error(message_id, code, message):
     return rpc_response(message_id, error={"code": code, "message": message})
 
 
-def origin_allowed(request):
+def origin_allowed(request, allowed):
     """DNS rebinding protection: browsers send Origin, CLI clients do not."""
     origin = request.headers.get("Origin")
     if not origin:
         return True
-    allowed = conf.get("ALLOWED_ORIGINS")
     if origin in allowed or "*" in allowed:
         return True
     return urlsplit(origin).netloc == request.get_host()
@@ -53,7 +51,7 @@ class MCPView(View):
 
     def post(self, request):
         server = self.server
-        if not origin_allowed(request):
+        if not origin_allowed(request, server.allowed_origins):
             return HttpResponse("Origin not allowed.", status=403)
         if request.content_type != "application/json":
             return HttpResponse("Content-Type must be application/json.", status=415)
@@ -66,6 +64,8 @@ class MCPView(View):
             response = JsonResponse({"error": "Unauthorized"}, status=401)
             response["WWW-Authenticate"] = "Bearer"
             return response
+        if not server.has_access(server.get_context(request, user, version)):
+            return JsonResponse({"error": "Forbidden"}, status=403)
 
         try:
             message = json.loads(request.body)

@@ -4,7 +4,7 @@ Admin-style MCP servers for Django. You register providers, models, admin
 classes and plain functions on a server, and they become MCP tools, resources
 and prompts, filtered by the calling user's permissions.
 
-Status: phase 1 (core) in progress. Sections marked *(planned)* describe API
+Status: phases 1 (core) and 2 (models) implemented; phase 2 is not yet proven in a project. Sections marked *(planned)* describe API
 that does not exist yet.
 
 ## Goals
@@ -36,7 +36,7 @@ that does not exist yet.
 |---|---|
 | `MCPServer` | A registry plus an HTTP endpoint. `xprez_mcp.mcp` is the default instance; create more for curated audiences. |
 | `Provider` | A class whose `@tool`, `@resource` and `@prompt` methods are exposed. Registered under a key (a provider class or a model). |
-| `ModelProvider` *(planned)* | A provider generated from a model: list/get/create/update/delete, resources per object. |
+| `ModelProvider` | A provider generated from a model: list/get/create/update/delete, resources per object. |
 | `AdminProvider` *(planned)* | A provider generated from a `ModelAdmin`, reusing its permissions, queryset, search, filters and form. |
 | `CallContext` (`ctx`) | Passed to every call: server, request, user, protocol version. Projects can subclass it. |
 | Item | One registered tool, resource or prompt. Identified by its name (tools, prompts) or URI (resources). |
@@ -122,7 +122,7 @@ Items are collected through the MRO in definition order. Redefining a method
 without a decorator removes it from MCP; to keep it exposed, decorate the
 override again.
 
-### Models *(planned, phase 2)*
+### Models
 
 ```python
 from xprez_mcp import ModelProvider, mcp, tool
@@ -162,24 +162,46 @@ class ClientProvider(ModelProvider):
 | `delete` | lookup | destructive |
 
 - Only `list` and `get` are on by default.
-- Default tool names are `<plural>_<action>` (`clients_list`, `clients_get`),
-  the plural being the slugified `verbose_name_plural`. `tool_names`
-  overrides single actions.
-- `fields` or `serializer` is required. Without either the provider raises
-  `ImproperlyConfigured` instead of exposing every field.
+- `name` (default: the slugified `verbose_name_plural`, `clients`) names the
+  model in tool names (`clients_list`), in generic mode and in resource URIs.
+  `tool_names` overrides single actions, `descriptions` their descriptions.
+- `lookup_field` defaults to `"pk"`, whose argument is called `id`.
+- Reading needs `fields` or `serializer`, not both; with neither the provider
+  raises `ImproperlyConfigured` instead of exposing every field.
+  `detail_fields` / `detail_serializer` apply to `get` and to write results.
+  `fields` may name model fields (a relation gives its pk, a to-many relation
+  a list of pks, a file its URL), properties and methods.
 - `serializer` is anything called as
   `serializer(instance, many=..., context=...)` with a `.data` attribute (DRF
-  serializers). The context carries `ctx`,
-  `request` and `user`. DRF is imported only when used, and its
-  `ValidationError`, `NotFound` and `PermissionDenied` map to readable errors.
+  serializers). The context carries `ctx`, `request` and `user`. DRF is never
+  imported by the library; when it is loaded, its `ValidationError` and other
+  `APIException`s map to readable errors.
+- `query` exists when `search_fields` is set or `search()` is overridden.
+  Search is admin-style: every word must match one field (`^` starts with,
+  `=` exact, `@` full text, default contains).
+- `filters` is a list of lookups or `{argument: lookup or callable}`. A
+  lookup's argument type follows the field and the lookup (`__in` takes a
+  list, `__isnull` a boolean, `__icontains` a string). A callable is
+  `f(ctx, queryset, value)`, typed by its `value` hint (default `str`).
+  Lookups across to-many relations add `distinct()`.
+- Ordering is `ordering`, then the model's `Meta.ordering`, then `pk`.
+  `ordering_fields` adds an `ordering` argument.
 - `list` returns `{"results", "count", "next_cursor"}`. The cursor is an
-  opaque offset, so the server stays stateless. Default limit 20, maximum 100.
-- Writes are validated by the DRF serializer when there is one, otherwise by a
-  `ModelForm` built from `fields`. Cleaned data goes through `perform_create` /
-  `perform_update` / `perform_delete`, so projects with a service layer keep it.
+  opaque offset, so the server stays stateless. `page_size` (20) and
+  `max_page_size` (100) bound `limit`.
+- Writes are validated by `serializer` when there is one, otherwise by a
+  `ModelForm` (`form`, default `ModelForm`) for just the fields sent. Writable
+  fields are `write_fields`, by default the editable fields among `fields` (or
+  the serializer's writable ones); without a serializer they must be editable
+  model fields. `update` cannot change the lookup field. Validated data goes
+  through `perform_create` / `perform_update` / `perform_delete` inside a
+  transaction, so projects with a service layer keep it.
+- `resources = True` adds `<scheme>://<name>` (the first page) and
+  `<scheme>://<name>/{lookup}`, with completion when the lookup is a string.
 - Generated tools are ordinary items. Excludes, `unregister_tool`, permissions
   and `mcp_inspect` treat them like decorated ones. Their schemas come from the
-  model fields through the same machinery as type hints.
+  model fields through the same machinery as type hints. Decorated methods on
+  a model provider stay ordinary items.
 
 #### Exposure: tools per model or generic
 
@@ -204,7 +226,9 @@ exposes a fixed set instead, however many models are registered:
 `model` is an enum built per user from the providers they pass, so
 `tools/list` still hides what they cannot use. Filters and fields are checked
 per call against that model's provider; an invalid one returns the valid
-options so the model can retry.
+options so the model can retry. Decorated tools and generated resources of
+model providers are exposed as usual. Two model providers with the same
+`name` on one generic server raise `ImproperlyConfigured`.
 
 ### Admin *(planned, phase 3)*
 
@@ -273,9 +297,13 @@ and registers them itself, the way a custom `AdminSite` does.
 Closed by default: a server nobody configured lets nobody in.
 
 A permission is always one of: a permission string (`user.has_perm`), a list
-of them (all required) or a callable `permission(ctx) -> bool`.
+of them (all required), a callable `permission(ctx) -> bool`, or a shorthand:
+`"authenticated"`, `"staff"` or `"any"` (Django permission names always contain
+a dot, so they cannot clash; an unknown dotless name raises
+`ImproperlyConfigured`). The shorthands are also importable as
+`xprez_mcp.permissions.allow_authenticated`, `allow_staff` and `allow_any`.
 
-### Server access *(planned, phase 2)*
+### Server access
 
 ```python
 XPREZ_MCP = {"PERMISSION": "crm.use_mcp"}  # required, no default
@@ -289,10 +317,11 @@ sales_mcp = MCPServer(permission=lambda ctx: ctx.user.is_salesperson)
 - Without a permission (neither the setting nor the argument), a system check
   error (`xprez_mcp.E001`) fails `manage.py check`, `runserver` and tests, and
   the server answers `403` in case checks are skipped.
-- Opening up is explicit and visible in review:
-  `xprez_mcp.permissions.allow_authenticated`, `allow_staff` and `allow_any`.
-  `allow_anonymous=True` also needs `allow_any`; on its own it no longer
-  opens the server.
+- Opening up is explicit and visible in review: `"authenticated"`, `"staff"`
+  or `"any"`. `allow_anonymous=True` also needs `"any"` (or a callable that
+  accepts `ctx.user` being None); on its own it no longer opens the server.
+- The checks cover servers mounted in the URLconf, so an unused default `mcp`
+  does not fail them.
 - No bundled `use_mcp` permission: that would need a model and a migration.
   Projects use one of their own.
 
@@ -307,7 +336,7 @@ Items that fail are left out of `*/list` and behave as unknown on call, so
 their existence does not leak. Row-level rules belong in `get_queryset` or in
 the item's own code.
 
-### Models *(planned, phase 2)*
+### Models
 
 Models sit below the admin and views, so `ModelProvider` adds no permission
 check of its own, Django's model permissions included. The server permission,
@@ -383,7 +412,8 @@ converted with the same type hints.
 - Protocol versions: `2025-06-18`, `2025-03-26`, `2024-11-05`. A newer spec
   version is reviewed and added by hand.
 - Requests must be `application/json`. A browser `Origin` must match the host
-  or `XPREZ_MCP["ALLOWED_ORIGINS"]` (DNS rebinding protection). Together these
+  or `XPREZ_MCP["ALLOWED_ORIGINS"]` (DNS rebinding protection; per server
+  `MCPServer(allowed_origins=[...])`). Together these
   also stop cross-site form posts when session auth is enabled.
 
 ## Authentication
@@ -408,7 +438,7 @@ OAuth (protected resource metadata, RFC 9728) is planned for later.
 XPREZ_MCP = {
     "NAME": "django",              # serverInfo.name of the default server
     "VERSION": "0.0.0",
-    "PERMISSION": None,            # required (phase 2); see Permissions
+    "PERMISSION": None,            # required; see Permissions
     "AUTODISCOVER": True,
     "AUTODISCOVER_MODULE": "mcp",
     "AUTHENTICATION": ["xprez_mcp.auth.bearer_token"],
@@ -418,6 +448,22 @@ XPREZ_MCP = {
     "EXCLUDE_APPS": [],
 }
 ```
+
+With several servers, the settings are defaults:
+
+- `NAME`, `VERSION`, `AUTHENTICATION`, `PERMISSION` and `ALLOWED_ORIGINS` are
+  replaced by the matching `MCPServer` argument.
+- `EXCLUDE` and `EXCLUDE_APPS` are combined with the server's `exclude` /
+  `exclude_apps`. A server can exclude more but never bring back what the
+  project excluded.
+- `TOKEN_RESOLVER` feeds the shared `auth.bearer_token`. A server with its own
+  resolver uses `authentication=[BearerToken(resolver=...)]`.
+- `AUTODISCOVER` and `AUTODISCOVER_MODULE` are global and fill the default
+  `mcp` only.
+
+The server name is also its URL namespace, so every server needs a unique
+name. A system check error (`xprez_mcp.E002`) reports
+servers that share a name, including two unnamed ones falling back to `NAME`.
 
 ## Management commands
 
@@ -430,20 +476,10 @@ XPREZ_MCP = {
    `@prompt` / completions, `CallContext`, schemas from type hints, error
    mapping, stateless view, pluggable auth, Origin check, autodiscovery,
    excludes, `mcp_inspect`. Proven in a project.
-2. **Models**: required server permission, `ModelProvider`,
-   `get_queryset(ctx)`, `perform_*` hooks, serializers (DRF optional),
-   generated resources, pagination, generic mode. Released as 0.2.0; the
-   required permission breaks 0.1.0 configurations. Steps, one PR each:
-   1. Server permission, `allow_*` helpers, system check.
-   2. Generated items; `ModelProvider` with `list` / `get`, `fields`,
-      `get_queryset`, lookup; test models.
-   3. Search, filters, ordering, pagination.
-   4. Generic mode.
-   5. Generated resources and completion.
-   6. Writes: `ModelForm` validation, `perform_*`, action and object
-      permissions.
-   7. DRF serializers and error mapping; a CI job with DRF installed.
-   8. Docs, release.
+2. **Models** (implemented, not yet proven): required server permission,
+   `ModelProvider`, `get_queryset(ctx)`, `perform_*` hooks, serializers (DRF
+   optional), generated resources, pagination, generic mode. Released as 0.2.0;
+   the required permission breaks 0.1.0 configurations.
 3. **Admin and third-party**: `AdminProvider`, `register_admin` (reusing the
    generic mode), write policy for third-party providers.
 4. **Advanced**: audiences (one catalog, per-audience wording), composite tools

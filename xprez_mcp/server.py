@@ -15,7 +15,7 @@ from django.http import Http404
 from django.urls import path
 from django.utils.module_loading import import_string
 
-from . import conf, results
+from . import conf, drf, results
 from .context import CallContext
 from .decorators import get_spec, prompt, resource, tool
 from .errors import (
@@ -30,6 +30,7 @@ from .errors import (
     ToolError,
 )
 from .items import Item
+from .permissions import check_permission
 from .providers import Provider
 from .schema import coerce_strings
 
@@ -68,16 +69,24 @@ class MCPServer:
         title=None,
         instructions=None,
         authentication=None,
+        permission=None,
         allow_anonymous=False,
+        allowed_origins=None,
         exclude=(),
         exclude_apps=(),
+        models="tools",
     ):
+        if models not in ("tools", "generic"):
+            raise ValueError("models must be 'tools' or 'generic'.")
         self._name = name
         self._version = version
         self.title = title
         self.instructions = instructions
         self.authentication = authentication
+        self._permission = permission
         self.allow_anonymous = allow_anonymous
+        self._allowed_origins = allowed_origins
+        self.models = models
         self.exclude = list(exclude)
         self.exclude_apps = list(exclude_apps)
         self._registry = {}
@@ -86,6 +95,7 @@ class MCPServer:
         self._error_handlers = []
         self._catalog = None
         self._view = None
+        self.mounted = False
         _servers.add(self)
 
     def __repr__(self):
@@ -98,6 +108,19 @@ class MCPServer:
     @property
     def version(self):
         return self._version or conf.get("VERSION")
+
+    @property
+    def permission(self):
+        """Who may use the server at all. None means nobody (closed by default)."""
+        if self._permission is not None:
+            return self._permission
+        return conf.get("PERMISSION")
+
+    @property
+    def allowed_origins(self):
+        if self._allowed_origins is not None:
+            return self._allowed_origins
+        return conf.get("ALLOWED_ORIGINS")
 
     # --- registration -------------------------------------------------------
 
@@ -206,6 +229,17 @@ class MCPServer:
             for item in provider.get_items()
         ]
         items += [Item(spec) for spec in self._functions]
+        if self.models == "generic":
+            from .generic import build_items
+            from .model_provider import ModelProvider
+
+            model_providers = [
+                provider
+                for provider in self._registry.values()
+                if isinstance(provider, ModelProvider)
+            ]
+            if model_providers:
+                items += build_items(self, model_providers)
         exclude = [*conf.get("EXCLUDE"), *self.exclude]
         exclude_apps = {*conf.get("EXCLUDE_APPS"), *self.exclude_apps}
         catalog = {kind: {} for kind in KINDS}
@@ -239,6 +273,7 @@ class MCPServer:
 
     @property
     def urls(self):
+        self.mounted = True
         return [path("", self.get_view(), name="endpoint")], "xprez_mcp", self.name
 
     def get_view(self):
@@ -267,6 +302,13 @@ class MCPServer:
             if user is not None:
                 return user
         return None
+
+    def has_access(self, ctx):
+        """The server-wide permission, checked before any method."""
+        permission = self.permission
+        if permission is None:
+            return False
+        return check_permission(permission, ctx)
 
     def get_context(self, request, user, protocol_version=None, meta=None):
         return self.context_class(
@@ -328,12 +370,12 @@ class MCPServer:
             result["instructions"] = instructions
         return result
 
-    def describe_tool(self, item):
+    def describe_tool(self, item, ctx=None):
         spec = item.spec
         entry = {
             "name": item.name,
             "description": spec.description,
-            "inputSchema": spec.input_schema,
+            "inputSchema": spec.get_input_schema(ctx),
         }
         if spec.title:
             entry["title"] = spec.title
@@ -346,7 +388,9 @@ class MCPServer:
 
     def list_tools(self, ctx, params):
         return {
-            "tools": [self.describe_tool(item) for item in self.get_items("tool", ctx)]
+            "tools": [
+                self.describe_tool(item, ctx) for item in self.get_items("tool", ctx)
+            ]
         }
 
     def call_tool(self, ctx, params):
@@ -381,6 +425,9 @@ class MCPServer:
             return results.tool_result(str(error) or "Not found.", is_error=True)
         if isinstance(error, ValidationError):
             return results.tool_result(" ".join(error.messages), is_error=True)
+        value = drf.error_value(error)
+        if value is not None:
+            return results.tool_result(value, is_error=True)
         logger.exception("Tool %s failed", item.name)
         return results.tool_result("Internal error.", is_error=True)
 
