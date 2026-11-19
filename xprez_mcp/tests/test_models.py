@@ -3,14 +3,14 @@ import unittest
 
 from django.contrib.auth.models import Permission, User
 from django.core.exceptions import ImproperlyConfigured
-from django.test import SimpleTestCase
+from django.test import SimpleTestCase, TestCase
 
 from xprez_mcp import MCPServer, ModelProvider
 from xprez_mcp.context import CallContext
 from xprez_mcp.model_provider import field_annotation
 
 from .test_protocol import MCPTestCase
-from .testapp.models import Client, Industry, Tag
+from .testapp.models import Client, ColoredTag, Industry, Tag
 
 try:
     import rest_framework  # noqa: F401
@@ -360,6 +360,22 @@ class GenericTests(ModelTestCase):
             ),
             {"deleted": True, "slug": "g"},
         )
+
+
+class OneToOneValueTests(TestCase):
+    def provider(self, model, fields):
+        cls = type("P", (ModelProvider,), {"fields": fields})
+        return cls(MCPServer(name="one-to-one"), model=model)
+
+    def test_parent_link_and_reverse(self):
+        colored = ColoredTag.objects.create(name="red", color="#f00")
+        child = self.provider(ColoredTag, ["tag_ptr", "color"])
+        self.assertEqual(child.field_value(colored, "tag_ptr"), colored.pk)
+        parent = self.provider(Tag, ["name", "coloredtag"])
+        tag = Tag.objects.get(pk=colored.pk)
+        self.assertEqual(parent.field_value(tag, "coloredtag"), colored.pk)
+        plain = Tag.objects.create(name="plain")
+        self.assertIsNone(parent.field_value(plain, "coloredtag"))
 
 
 class ConfigurationTests(SimpleTestCase):

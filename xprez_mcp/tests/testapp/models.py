@@ -13,6 +13,12 @@ class Tag(models.Model):
     name = models.CharField(max_length=50)
 
 
+class ColoredTag(Tag):
+    """Multi-table inheritance: an auto-created, concrete ``tag_ptr``."""
+
+    color = models.CharField(max_length=20)
+
+
 class Client(models.Model):
     SIZES = [("s", "Small"), ("m", "Medium"), ("l", "Large")]
 

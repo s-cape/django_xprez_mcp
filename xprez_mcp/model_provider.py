@@ -504,7 +504,7 @@ class ModelProvider(Provider):
             accessor = field.get_accessor_name() if field.auto_created else name
             return [related.pk for related in getattr(instance, accessor).all()]
         if field.is_relation:
-            if field.auto_created:  # reverse one-to-one
+            if field.auto_created and not field.concrete:  # reverse one-to-one
                 related = getattr(instance, field.get_accessor_name(), None)
                 return getattr(related, "pk", None)
             return getattr(instance, field.attname)
