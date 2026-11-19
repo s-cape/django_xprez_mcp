@@ -1,14 +1,16 @@
+from django.contrib import admin
 from django.contrib.admin.models import ADDITION, CHANGE, DELETION, LogEntry
 from django.contrib.auth.models import Permission, User
 from django.core.exceptions import ImproperlyConfigured
-from django.test import SimpleTestCase
+from django.test import SimpleTestCase, TestCase
 
 from xprez_mcp import AdminProvider, MCPServer
+from xprez_mcp.context import CallContext
 
 from .test_models import ModelTestCase
 from .testapp.admin import site
 from .testapp.admin_servers import admin_mcp
-from .testapp.models import Client, Contact, Industry, Tag
+from .testapp.models import Client, ColoredTag, Contact, Industry, Swatch, Tag
 
 
 def grant(user, *codenames):
@@ -390,3 +392,32 @@ class AdminConfigurationTests(SimpleTestCase):
         models = [provider.model for provider in server.get_providers()]
         self.assertEqual(models.count(Industry), 1)
         self.assertIn(Client, models)
+
+
+class InlineOfInheritedParentTests(TestCase):
+    """Inline rows use their own primary key, not the parent's (here tag_ptr)."""
+
+    def test_get_includes_inline_rows(self):
+        class SwatchInline(admin.TabularInline):
+            model = Swatch
+            fields = ["hex"]
+
+        class ColoredTagAdmin(admin.ModelAdmin):
+            fields = ["name", "color"]
+            inlines = [SwatchInline]
+
+        local_site = admin.AdminSite(name="inherited")
+        local_site.register(ColoredTag, ColoredTagAdmin)
+        provider_class = type("P", (AdminProvider,), {"admin_site": local_site})
+        server = MCPServer(name="inherited")
+        provider = provider_class(server, model=ColoredTag)
+        tag = ColoredTag.objects.create(name="red", color="#f00")
+        swatch = Swatch.objects.create(tag=tag, hex="#f00")
+        root = User.objects.create_superuser("inherited-root")
+        ctx = CallContext(server=server, user=root)
+        data = provider.serialize(ctx, tag, detail=True)
+        self.assertEqual(data["tag_ptr"], tag.pk)
+        self.assertEqual(
+            data["inlines"]["swatches"],
+            {"results": [{"id": swatch.pk, "hex": "#f00"}], "count": 1},
+        )

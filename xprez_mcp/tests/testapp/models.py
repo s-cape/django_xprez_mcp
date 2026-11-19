@@ -19,6 +19,16 @@ class ColoredTag(Tag):
     color = models.CharField(max_length=20)
 
 
+class Swatch(models.Model):
+    tag = models.ForeignKey(
+        ColoredTag, related_name="swatches", on_delete=models.CASCADE
+    )
+    hex = models.CharField(max_length=7)
+
+    class Meta:
+        verbose_name_plural = "swatches"
+
+
 class Client(models.Model):
     SIZES = [("s", "Small"), ("m", "Medium"), ("l", "Large")]
 

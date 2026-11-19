@@ -377,9 +377,10 @@ class AdminProvider(ModelProvider):
         return super().field_value(instance, name)
 
     def detail_names(self, model_admin, request, obj, exclude=()):
-        names = [obj._meta.pk.name]
         if model_admin is self.model_admin:
             names = [self.lookup_name]
+        else:  # an inline: obj is the parent, the rows are the inline's model
+            names = [model_admin.model._meta.pk.name]
         for name in model_admin.get_fields(request, obj):
             if name not in names and name not in exclude:
                 names.append(name)
