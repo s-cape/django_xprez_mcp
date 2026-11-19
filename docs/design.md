@@ -299,7 +299,8 @@ therefore never adds a write tool on its own.
   minus `readonly_fields`. Per call, sending a field that
   `get_readonly_fields(request, obj)` or `get_fields(request, obj)` excludes
   is an error. Validation uses `get_form(request, obj, fields=sent)`; then
-  `save_form`, `save_model`, `save_related` (no formsets), and
+  `save_form`, `save_model`, `save_related` (no formsets; inline rows have
+  their own tools, below), and
   `log_addition` / `log_change` with `construct_change_message`, so the
   admin history shows the change. `delete` uses `delete_model` and logs the
   deletion. All inside a transaction.
@@ -323,8 +324,34 @@ order of autodiscovery). Models registered on the server explicitly win;
 `exclude` removes models or apps; `provider_class` sets the base class.
 `exposure` sets the providers' `exposure`.
 
-Not in phase 3: inlines and formsets (ignored on write, not shown on
-`get`), admin views beyond the changelist and change form, `list_editable`.
+**Inlines.** Inline rows are edited one at a time through tools scoped to
+the parent, never nested in the parent's payload (large nested schemas are
+where models make mistakes, and "missing row" would be ambiguous):
+
+| Tool | Generic mode |
+|---|---|
+| `clients_contacts_list(parent, limit, cursor)` | `record_children_list(model, id, inline, ...)` |
+| `clients_contacts_create(parent, ...)` | `record_child_create(model, id, inline, data)` |
+| `clients_contacts_update(parent, id, ...)` | `record_child_update(model, id, inline, child, data)` |
+| `clients_contacts_delete(parent, id)` | `record_child_delete(model, id, inline, child)` |
+
+- The inlines are `get_inline_instances(request, obj)`, so per-user and
+  per-object rules hold; `inlines = [ContactInline]` limits which are
+  exposed. An inline is named by its model's slugified `verbose_name_plural`
+  (`inline_names` overrides).
+- `get` includes each inline's rows (up to `max_page_size`, with a count);
+  the list tool pages the rest. Reading needs the parent's `get`.
+- Writes need the parent's `update` to be exposed (editing inlines is part
+  of changing the parent in the admin), the parent's
+  `has_change_permission(request, obj)` and the inline's
+  `has_add/change/delete_permission(request, obj)`.
+- Validation runs the inline's whole formset (the existing rows plus the one
+  change), so `min_num` / `max_num`, the formset's `clean()` and uniqueness
+  across rows still apply. Then `save_related` with that formset and a
+  `log_change` on the parent, in one transaction per call.
+
+Not in phase 3: admin views beyond the changelist and change form,
+`list_editable`.
 
 ### Unregistering and third-party apps
 
@@ -457,6 +484,19 @@ and the item or action permission (hidden) → `get_queryset` (not found) →
 `has_object_permission` (`PermissionDenied`) → the call or `perform_*`. Each
 layer can only narrow the one before it.
 
+## Names *(planned, phase 3)*
+
+Tool and prompt names must match `^[A-Za-z0-9_-]{1,64}$`. That is stricter
+than the MCP spec (128 characters, dots allowed) but is what the Claude and
+OpenAI APIs accept, so names survive the phase 4 export and every client.
+Names are checked when the catalog is built, because namespaces, model names
+and `tool_names` are only final then: an invalid name raises
+`ImproperlyConfigured`, and the system check error `xprez_mcp.E003` reports
+it at `manage.py check`. Names are never rewritten. A warning
+(`xprez_mcp.W001`) flags names over 40 characters, as clients that prefix
+the server name can hit their own limits. Resource URIs follow URI rules
+only.
+
 ## Schemas and arguments
 
 The input schema is derived from type hints: `str`, `int`, `float`, `bool`,
@@ -494,6 +534,14 @@ converted with the same type hints.
   `resources/list`, `resources/templates/list`, `resources/read`,
   `prompts/list`, `prompts/get`, `completion/complete`. Notifications and
   client responses get `202`.
+- *(planned, phase 3)* `tools/list`, `resources/list`,
+  `resources/templates/list` and `prompts/list` page with the spec's
+  `cursor` / `nextCursor`. The per-user list is sorted by name or URI and the
+  cursor is the last identifier seen (opaque, keyset), so the server stays
+  stateless and a catalog that changes between pages neither skips nor
+  repeats items. Off by default, because not every client follows
+  `nextCursor`: `XPREZ_MCP["LIST_PAGE_SIZE"]` (default `None`, one page) or
+  `MCPServer(list_page_size=...)`.
 - Protocol versions: `2025-06-18`, `2025-03-26`, `2024-11-05`. A newer spec
   version is reviewed and added by hand.
 - Requests must be `application/json`. A browser `Origin` must match the host
@@ -531,13 +579,16 @@ XPREZ_MCP = {
     "ALLOWED_ORIGINS": [],
     "EXCLUDE": [],
     "EXCLUDE_APPS": [],
+    "ALLOW_WRITES": [],            # phase 3: third-party apps with writes
+    "LIST_PAGE_SIZE": None,        # phase 3: page size of */list
 }
 ```
 
 With several servers, the settings are defaults:
 
-- `NAME`, `VERSION`, `AUTHENTICATION`, `PERMISSION` and `ALLOWED_ORIGINS` are
-  replaced by the matching `MCPServer` argument.
+- `NAME`, `VERSION`, `AUTHENTICATION`, `PERMISSION`, `ALLOWED_ORIGINS` and
+  `LIST_PAGE_SIZE` are replaced by the matching `MCPServer` argument.
+  `ALLOW_WRITES` is combined with the server's `allow_writes`.
 - `EXCLUDE` and `EXCLUDE_APPS` are combined with the server's `exclude` /
   `exclude_apps`. A server can exclude more but never bring back what the
   project excluded.
@@ -567,9 +618,11 @@ servers that share a name, including two unnamed ones falling back to `NAME`.
    the required permission breaks 0.1.0 configurations.
 3. **Admin and third-party** (planned): `AdminProvider` with the admin's
    permissions, querysets, search, `list_filter`, forms, `save_model` and
-   `LogEntry`; admin actions (opt-in); `register_admin`; per-provider
-   `exposure`; opt-in writes for third-party apps (`ALLOW_WRITES`). Released as
-   0.3.0, without breaking changes.
+   `LogEntry`; inline tools; admin actions (opt-in); `register_admin`;
+   per-provider `exposure`; opt-in writes for third-party apps
+   (`ALLOW_WRITES`); `*/list` pagination; the portable name rule. Released as
+   0.3.0; the name rule breaks names outside `[A-Za-z0-9_-]` or over 64
+   characters.
 4. **Advanced**: audiences (one catalog, per-audience wording), composite tools
    generated from other items (a `batch_update` over several tools),
    confirmation policies (`flag`, `deferred` approval, `elicit`), export as
@@ -579,9 +632,7 @@ servers that share a name, including two unnamed ones falling back to `NAME`.
 
 ## Open questions
 
-- Admin inlines: expose them on `get`, and later as nested writes?
-- Pagination for `*/list` methods once catalogs get large.
-- Tool name rules: enforce the MCP character set at registration?
+None at the moment.
 
 ## Prior art
 
