@@ -4,7 +4,8 @@ Admin-style MCP servers for Django. You register providers, models, admin
 classes and plain functions on a server, and they become MCP tools, resources
 and prompts, filtered by the calling user's permissions.
 
-Status: phases 1 (core) and 2 (models) implemented; phase 2 is not yet proven in a project. Sections marked *(planned)* describe API
+Status: phases 1 (core), 2 (models) and 3 (admin) implemented; phases 2 and
+3 are not yet proven in a project. Sections marked *(planned)* describe API
 that does not exist yet.
 
 ## Goals
@@ -37,7 +38,7 @@ that does not exist yet.
 | `MCPServer` | A registry plus an HTTP endpoint. `xprez_mcp.mcp` is the default instance; create more for curated audiences. |
 | `Provider` | A class whose `@tool`, `@resource` and `@prompt` methods are exposed. Registered under a key (a provider class or a model). |
 | `ModelProvider` | A provider generated from a model: list/get/create/update/delete, resources per object. |
-| `AdminProvider` *(planned)* | A `ModelProvider` driven by a `ModelAdmin`: exactly the admin's permissions, plus its queryset, search, filters, form and history. |
+| `AdminProvider` | A `ModelProvider` driven by a `ModelAdmin`: exactly the admin's permissions, plus its queryset, search, filters, form and history. |
 | `CallContext` (`ctx`) | Passed to every call: server, request, user, protocol version. Projects can subclass it. |
 | Item | One registered tool, resource or prompt. Identified by its name (tools, prompts) or URI (resources). |
 
@@ -212,7 +213,7 @@ mcp = MCPServer(models="tools")    # default: clients_list, clients_get, ...
 staff_mcp = MCPServer(models="generic")
 ```
 
-*(planned, phase 3)* A provider can override the server default, so a few
+A provider can override the server default, so a few
 curated models keep their own tools while the rest of the admin goes generic
 on the same server:
 
@@ -239,7 +240,7 @@ options so the model can retry. Decorated tools and generated resources of
 model providers are exposed as usual. Two model providers with the same
 `name` on one generic server raise `ImproperlyConfigured`.
 
-### Admin *(planned, phase 3)*
+### Admin
 
 ```python
 from django.contrib import admin
@@ -250,11 +251,13 @@ from xprez_mcp import AdminProvider, mcp
 class ClientAdminProvider(AdminProvider):
     actions = ["list", "get", "update"]
     admin_actions = ["mark_active"]  # ModelAdmin actions, opt-in
+    # admin_site = my_site; admin_class = OtherClientAdmin
+    # inlines = [ContactInline]; inline_names = {ContactInline: "people"}
 
 # the whole admin
 mcp.register_admin(
     admin.site,
-    exclude=[LogEntry],          # models (or app labels)
+    exclude=[LogEntry, "taggit"],  # models, app labels or "app.model"
     actions=["list", "get"],     # default; writes are opt-in, per model too:
     model_actions={Client: ["list", "get", "update"]},
     exposure="generic",          # the phase 2 generic tools
@@ -284,45 +287,56 @@ therefore never adds a write tool on its own.
 
 - `fields` (list results): `list_display` entries that are model fields,
   properties or admin/model methods; `__str__` becomes `display`. The lookup
-  field is always included. `detail_fields` (`get` and write results): the
-  admin's fields and readonly fields. Both can be overridden as usual.
+  field is always included. `get` and write results show
+  `get_fields(request, obj)` (readonly fields included) unless
+  `detail_fields` / `detail_serializer` are set. Values that are not JSON
+  (model instances, HTML) are sent as strings.
 - Search: `get_search_results(request, queryset, query)`, with `distinct()`
   when it may return duplicates. `query` exists when the admin has
   `search_fields`.
 - Filters: `list_filter` entries. A field name becomes a filter typed by the
   field (choices as an enum, relations by pk, booleans, dates as `__gte` /
-  `__lte` pairs). A `SimpleListFilter` becomes an argument whose enum is its
-  `lookups(request, model_admin)`, applied with `queryset(request, qs)`.
-  Unsupported entries are skipped and reported by `mcp_inspect`.
-- Ordering: `get_ordering(request)`.
-- Writes: the schema comes from the admin's static `fields` / `fieldsets`
-  minus `readonly_fields`. Per call, sending a field that
-  `get_readonly_fields(request, obj)` or `get_fields(request, obj)` excludes
-  is an error. Validation uses `get_form(request, obj, fields=sent)`; then
+  `__lte` pairs); `(field, FieldListFilter)` filters by the field. A
+  `SimpleListFilter` becomes a string argument named by its `parameter_name`,
+  checked per call against `lookups(request, model_admin)` (an invalid value
+  returns the options) and applied with `queryset(request, qs)`. Unsupported
+  entries are skipped and reported by `mcp_inspect`.
+- Ordering: `get_ordering(request)`, with `pk` added for stable pages.
+- Writes: the schema comes from the admin's fields read without a user
+  (`get_fields` / `get_readonly_fields`, or the static `fields` /
+  `fieldsets` when an override needs a user), limited to editable model
+  fields. Per call, sending a field that `get_fieldsets(request, obj)` or
+  `get_readonly_fields(request, obj)` excludes is an error. Validation uses `get_form(request, obj, fields=sent)`; then
   `save_form`, `save_model`, `save_related` (no formsets; inline rows have
   their own tools, below), and
   `log_addition` / `log_change` with `construct_change_message`, so the
-  admin history shows the change. `delete` uses `delete_model` and logs the
-  deletion. All inside a transaction.
+  admin history shows the change. `delete` first runs
+  `get_deleted_objects`, so it fails when the cascade reaches registered
+  models the user cannot delete or protected objects, then logs the deletion
+  and calls `delete_model`. All inside a transaction.
 - Admin actions (`admin_actions`, opt-in): one `<name>_action(action, ids)`
   tool per model, `record_action(model, action, ids)` in generic mode. The
-  `action` enum is built per user from `get_actions(request)`. Actions that
-  return a response (an intermediate page, a download) are not supported;
-  `delete_selected` is never exposed.
+  tool is visible when `get_actions(request)` offers the user one of them,
+  and an action it does not offer is refused with the available ones. An
+  action without `permissions` is offered to everyone who can see the model,
+  as in the admin. An action that returns a response (an intermediate page,
+  a download) is rolled back and reported as unsupported; `delete_selected`
+  is never exposed.
 
 **The request.** Admin methods get a copy of the MCP request
-(`get_admin_request(ctx, action)`): `user` is the caller, `method` is `GET`
+(`get_admin_request(ctx)`, one per call): `user` is the caller, `method` is `GET`
 for reads and `POST` for writes, `GET` / `POST` are empty, `current_app` is
 the site's name. Its message storage collects what `message_user` /
 `messages.*` add, and those messages are returned in the result
-(`"messages": [...]`). `request.session` is whatever the middleware set;
+(`"messages": [{"level": "info", "message": "..."}]`). `request.session` is whatever the middleware set;
 admin code that needs one fails without session middleware.
 
 **`register_admin`** creates an `AdminProvider` subclass for every model in
 the site's registry, when the catalog is built (so it does not depend on the
 order of autodiscovery). Models registered on the server explicitly win;
-`exclude` removes models or apps; `provider_class` sets the base class.
-`exposure` sets the providers' `exposure`.
+`exclude` removes models or apps; `provider_class` sets the base class;
+`exposure` sets the providers' `exposure`. The generated classes take the
+`ModelAdmin`'s module, so `EXCLUDE_APPS` applies by the admin's app.
 
 **Inlines.** Inline rows are edited one at a time through tools scoped to
 the parent, never nested in the parent's payload (large nested schemas are
@@ -335,10 +349,11 @@ where models make mistakes, and "missing row" would be ambiguous):
 | `clients_contacts_update(parent, id, ...)` | `record_child_update(model, id, inline, child, data)` |
 | `clients_contacts_delete(parent, id)` | `record_child_delete(model, id, inline, child)` |
 
-- The inlines are `get_inline_instances(request, obj)`, so per-user and
-  per-object rules hold; `inlines = [ContactInline]` limits which are
-  exposed. An inline is named by its model's slugified `verbose_name_plural`
-  (`inline_names` overrides).
+- The inlines are those of `get_formsets_with_inlines(request, obj)`, so
+  per-user and per-object rules hold; `inlines = [ContactInline]` limits
+  which are exposed. An inline is named by its model's slugified
+  `verbose_name_plural` (`inline_names` overrides). Inlines without a foreign
+  key to the model (generic relations) are skipped.
 - `get` includes each inline's rows (up to `max_page_size`, with a count);
   the list tool pages the rest. Reading needs the parent's `get`.
 - Writes need the parent's `update` to be exposed (editing inlines is part
@@ -347,8 +362,9 @@ where models make mistakes, and "missing row" would be ambiguous):
   `has_add/change/delete_permission(request, obj)`.
 - Validation runs the inline's whole formset (the existing rows plus the one
   change), so `min_num` / `max_num`, the formset's `clean()` and uniqueness
-  across rows still apply. Then `save_related` with that formset and a
-  `log_change` on the parent, in one transaction per call.
+  across rows still apply; rows the user may only view are not validated,
+  as in the change form. Then `save_formset` and a `log_change` on the
+  parent, in one transaction per call.
 
 Not in phase 3: admin views beyond the changelist and change form,
 `list_editable`.
@@ -374,7 +390,7 @@ XPREZ_MCP = {
 }
 ```
 
-*(planned, phase 3)* Writes from third-party apps are opt-in. A tool that is
+Writes from third-party apps are opt-in. A tool that is
 not `read_only` and comes from an app installed as a package (its path under
 `site-packages` / `dist-packages`) is left out until the app is allowed:
 
@@ -383,9 +399,11 @@ XPREZ_MCP = {"ALLOW_WRITES": ["taggit", "filer"]}  # app labels, globs allowed
 ```
 
 Reads, resources and prompts are exposed by default. Per server,
-`MCPServer(allow_writes=[...])` adds to the setting. `mcp_inspect` lists the
-held back tools. `register_admin` providers count as the project's own: their
-writes are already opt-in through `actions`.
+`MCPServer(allow_writes=[...])` adds to the setting. Model providers of such
+apps lose their write actions in generic mode too. `server.held_back` and
+`mcp_inspect` list the held back tools. `register_admin` providers count as
+the project's own: their writes are already opt-in through `actions`.
+`MCPServer.is_third_party(app_config)` can be overridden.
 
 ### Several servers
 
@@ -484,14 +502,14 @@ and the item or action permission (hidden) → `get_queryset` (not found) →
 `has_object_permission` (`PermissionDenied`) → the call or `perform_*`. Each
 layer can only narrow the one before it.
 
-## Names *(planned, phase 3)*
+## Names
 
 Tool and prompt names must match `^[A-Za-z0-9_-]{1,64}$`. That is stricter
 than the MCP spec (128 characters, dots allowed) but is what the Claude and
 OpenAI APIs accept, so names survive the phase 4 export and every client.
 Names are checked when the catalog is built, because namespaces, model names
 and `tool_names` are only final then: an invalid name raises
-`ImproperlyConfigured`, and the system check error `xprez_mcp.E003` reports
+`InvalidName` (an `ImproperlyConfigured`), and the system check error `xprez_mcp.E003` reports
 it at `manage.py check`. Names are never rewritten. A warning
 (`xprez_mcp.W001`) flags names over 40 characters, as clients that prefix
 the server name can hit their own limits. Resource URIs follow URI rules
@@ -534,14 +552,14 @@ converted with the same type hints.
   `resources/list`, `resources/templates/list`, `resources/read`,
   `prompts/list`, `prompts/get`, `completion/complete`. Notifications and
   client responses get `202`.
-- *(planned, phase 3)* `tools/list`, `resources/list`,
-  `resources/templates/list` and `prompts/list` page with the spec's
-  `cursor` / `nextCursor`. The per-user list is sorted by name or URI and the
-  cursor is the last identifier seen (opaque, keyset), so the server stays
+- `tools/list`, `resources/list`, `resources/templates/list` and
+  `prompts/list` page with the spec's `cursor` / `nextCursor`. When paging is
+  on, the per-user list is sorted by name or URI and the cursor is the last
+  identifier seen (opaque, keyset), so the server stays
   stateless and a catalog that changes between pages neither skips nor
   repeats items. Off by default, because not every client follows
   `nextCursor`: `XPREZ_MCP["LIST_PAGE_SIZE"]` (default `None`, one page) or
-  `MCPServer(list_page_size=...)`.
+  `MCPServer(list_page_size=...)` (`0` turns it off).
 - Protocol versions: `2025-06-18`, `2025-03-26`, `2024-11-05`. A newer spec
   version is reviewed and added by hand.
 - Requests must be `application/json`. A browser `Origin` must match the host
@@ -579,8 +597,8 @@ XPREZ_MCP = {
     "ALLOWED_ORIGINS": [],
     "EXCLUDE": [],
     "EXCLUDE_APPS": [],
-    "ALLOW_WRITES": [],            # phase 3: third-party apps with writes
-    "LIST_PAGE_SIZE": None,        # phase 3: page size of */list
+    "ALLOW_WRITES": [],            # third-party apps whose writes are exposed
+    "LIST_PAGE_SIZE": None,        # page size of */list; None sends everything
 }
 ```
 
@@ -604,7 +622,9 @@ servers that share a name, including two unnamed ones falling back to `NAME`.
 ## Management commands
 
 - `mcp_inspect [--server dotted.path] [--user username]` lists every item, its
-  source, and with `--user` which ones that user cannot see.
+  source, and with `--user` which ones that user cannot see. It also lists
+  write tools held back by `ALLOW_WRITES` and admin entries (`list_filter`,
+  inlines) that `AdminProvider` could not map.
 
 ## Phases
 
@@ -616,12 +636,12 @@ servers that share a name, including two unnamed ones falling back to `NAME`.
    `ModelProvider`, `get_queryset(ctx)`, `perform_*` hooks, serializers (DRF
    optional), generated resources, pagination, generic mode. Released as 0.2.0;
    the required permission breaks 0.1.0 configurations.
-3. **Admin and third-party** (planned): `AdminProvider` with the admin's
-   permissions, querysets, search, `list_filter`, forms, `save_model` and
-   `LogEntry`; inline tools; admin actions (opt-in); `register_admin`;
-   per-provider `exposure`; opt-in writes for third-party apps
-   (`ALLOW_WRITES`); `*/list` pagination; the portable name rule. Released as
-   0.3.0; the name rule breaks names outside `[A-Za-z0-9_-]` or over 64
+3. **Admin and third-party** (implemented, not yet proven): `AdminProvider`
+   with the admin's permissions, querysets, search, `list_filter`, forms,
+   `save_model` and `LogEntry`; inline tools; admin actions (opt-in);
+   `register_admin`; per-provider `exposure`; opt-in writes for third-party
+   apps (`ALLOW_WRITES`); `*/list` pagination; the portable name rule. Released
+   as 0.3.0; the name rule breaks names outside `[A-Za-z0-9_-]` or over 64
    characters.
 4. **Advanced**: audiences (one catalog, per-audience wording), composite tools
    generated from other items (a `batch_update` over several tools),

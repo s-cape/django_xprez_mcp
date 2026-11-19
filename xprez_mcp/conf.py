@@ -11,6 +11,8 @@ DEFAULTS = {
     "ALLOWED_ORIGINS": [],
     "EXCLUDE": [],
     "EXCLUDE_APPS": [],
+    "ALLOW_WRITES": [],
+    "LIST_PAGE_SIZE": None,
 }
 
 

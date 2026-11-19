@@ -36,3 +36,18 @@ class Client(models.Model):
 
     def label(self):
         return f"{self.name} ({self.slug})"
+
+
+class Contact(models.Model):
+    client = models.ForeignKey(
+        Client, related_name="contacts", on_delete=models.CASCADE
+    )
+    name = models.CharField(max_length=100)
+    email = models.EmailField(blank=True)
+    primary = models.BooleanField(default=False)
+
+    class Meta:
+        ordering = ["name"]
+
+    def __str__(self):
+        return self.name

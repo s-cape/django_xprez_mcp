@@ -4,7 +4,7 @@ Admin-style MCP servers for Django. Register providers, models, admin classes
 and plain functions on a server; they become MCP tools, resources and prompts,
 filtered by the calling user's permissions.
 
-Early development: phases 1 (core) and 2 (models). See
+Early development: phases 1 (core), 2 (models) and 3 (admin). See
 [docs/design.md](docs/design.md) for the full design and roadmap.
 
 ```python
@@ -69,7 +69,26 @@ class NoteProvider(ModelProvider):
 
 With many models, `MCPServer(models="generic")` exposes them through a few
 shared tools (`models_list`, `records_search`, `record_get`, ...) instead of
-tools per model.
+tools per model. A provider can choose for itself with `exposure`.
+
+```python
+# the admin, with exactly the permissions each user has there
+from django.contrib import admin
+from xprez_mcp import AdminProvider, mcp
+
+
+@mcp.register(Note)
+class NoteAdminProvider(AdminProvider):  # uses the registered NoteAdmin
+    actions = ["list", "get", "update"]  # writes are opt-in
+    admin_actions = ["publish"]          # ModelAdmin actions, opt-in
+
+
+# the rest of admin.site (models registered above keep their own provider)
+mcp.register_admin(admin.site, exposure="generic")
+```
+
+Write tools from installed third-party apps are held back until listed in
+`XPREZ_MCP["ALLOW_WRITES"]`.
 
 ## Development
 

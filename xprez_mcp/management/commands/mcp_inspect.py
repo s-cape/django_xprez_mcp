@@ -34,3 +34,10 @@ class Command(BaseCommand):
                 hidden = ctx is not None and not item.is_allowed(ctx)
                 line = f"{kind:<9} {identifier:<40} {item.source}"
                 self.stdout.write(line + ("  (hidden)" if hidden else ""))
+        for item in server.held_back:
+            line = f"{item.kind:<9} {item.identifier:<40} {item.source}"
+            self.stdout.write(line + "  (held back: ALLOW_WRITES)")
+        for provider in server.get_providers():
+            for entry in getattr(provider, "unsupported", ()):
+                label = type(provider).__qualname__
+                self.stdout.write(f"note      {label}: unsupported {entry}")

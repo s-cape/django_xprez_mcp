@@ -51,6 +51,56 @@ def record_delete(ctx, model: MODEL, id: ID):
     """Delete a record."""
 
 
+def record_action(
+    ctx,
+    model: MODEL,
+    action: Annotated[str, "An admin action from models_list"],
+    ids: Annotated[list[str | int], "Lookup values of the records"],
+):
+    """Run an admin action on records. models_list shows the actions."""
+
+
+INLINE = Annotated[str, "An inline from models_list"]
+CHILD = Annotated[str | int, "The inline row's id"]
+
+
+def record_children_list(
+    ctx,
+    model: MODEL,
+    id: ID,
+    inline: INLINE,
+    limit: Annotated[int | None, "Results per page"] = None,
+    cursor: Annotated[str | None, "next_cursor from the previous page"] = None,
+):
+    """List the rows of a record's inline. Pass next_cursor as cursor for the
+    next page."""
+
+
+def record_child_create(
+    ctx,
+    model: MODEL,
+    id: ID,
+    inline: INLINE,
+    data: Annotated[dict[str, Any], "Field values"],
+):
+    """Add a row to a record's inline."""
+
+
+def record_child_update(
+    ctx,
+    model: MODEL,
+    id: ID,
+    inline: INLINE,
+    child: CHILD,
+    data: Annotated[dict[str, Any], "Fields to change"],
+):
+    """Change a row of a record's inline. Only the fields given change."""
+
+
+def record_child_delete(ctx, model: MODEL, id: ID, inline: INLINE, child: CHILD):
+    """Remove a row from a record's inline."""
+
+
 TOOLS = [
     (models_list, None, {"read_only": True}),
     (records_search, "list", {"read_only": True}),
@@ -58,6 +108,11 @@ TOOLS = [
     (record_create, "create", {}),
     (record_update, "update", {"idempotent": True}),
     (record_delete, "delete", {"destructive": True}),
+    (record_action, "action", {}),
+    (record_children_list, "children_list", {"read_only": True}),
+    (record_child_create, "child_create", {}),
+    (record_child_update, "child_update", {"idempotent": True}),
+    (record_child_delete, "child_delete", {"destructive": True}),
 ]
 
 
@@ -103,6 +158,11 @@ class GenericToolSpec(ToolSpec):
             providers = self.available(ctx).values()
             return {"models": [provider.describe(ctx) for provider in providers]}
         provider = self.resolve(ctx, model)
+        if self.action == "action":
+            ids = [parse_lookup(provider, value) for value in options["ids"]]
+            return provider.run_admin_action(ctx, options["action"], ids)
+        if self.action == "children_list" or self.action.startswith("child_"):
+            return self.run_child(ctx, provider, id, data, **options)
         if self.action == "list":
             arguments = dict(filters or {})
             arguments.update({k: v for k, v in options.items() if v is not None})
@@ -113,6 +173,23 @@ class GenericToolSpec(ToolSpec):
         if self.action != "create":
             arguments[provider.lookup_argument] = parse_lookup(provider, id)
         return provider.run(ctx, self.action, **arguments)
+
+    def run_child(self, ctx, provider, id, data, inline, child=None, **options):
+        parent = parse_lookup(provider, id)
+        if self.action == "children_list":
+            options = {k: v for k, v in options.items() if v is not None}
+            return provider.run_children_list(ctx, inline, parent, **options)
+        if inline not in provider.inline_specs:
+            raise InvalidArguments(
+                f"Unknown inline {inline!r}. Available: "
+                f"{sorted(provider.inline_specs)}."
+            )
+        operation = self.action[len("child_") :]
+        arguments = {}
+        if operation != "delete":
+            func = provider.inline_argument_function(inline, operation)
+            arguments = parse_function(func, data)
+        return provider.run_child(ctx, operation, inline, parent, child, **arguments)
 
 
 class GenericItem(Item):
@@ -128,7 +205,10 @@ def parse_lookup(provider, value):
 
 def parse(provider, action, arguments):
     """Validate ``arguments`` against the provider's own schema for the action."""
-    func = provider.argument_function(action)
+    return parse_function(provider.argument_function(action), arguments)
+
+
+def parse_function(func, arguments):
     try:
         return schema.coerce_arguments(func, arguments)
     except InvalidArguments as error:
@@ -151,7 +231,7 @@ def build_items(server, providers):
     items = []
     for func, action, hints in TOOLS:
         if action is not None and not any(
-            action in provider.actions for provider in providers
+            action in provider.generic_actions() for provider in providers
         ):
             continue
         items.append(GenericItem(GenericToolSpec(func, action, by_name, **hints)))

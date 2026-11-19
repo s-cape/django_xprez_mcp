@@ -1,7 +1,12 @@
+import base64
 import fnmatch
 import inspect
 import logging
+import re
 import weakref
+from pathlib import Path
+
+from django.apps import apps
 
 from django.core.exceptions import (
     ImproperlyConfigured,
@@ -25,6 +30,7 @@ from .errors import (
     AlreadyRegistered,
     AuthenticationFailed,
     InvalidArguments,
+    InvalidName,
     NotRegistered,
     RpcError,
     ToolError,
@@ -40,6 +46,10 @@ logger = logging.getLogger("xprez_mcp")
 PROTOCOL_VERSIONS = ("2025-06-18", "2025-03-26", "2024-11-05")
 KINDS = ("tool", "resource", "prompt")
 MAX_COMPLETIONS = 100
+# What the Claude and OpenAI APIs accept; stricter than the MCP spec.
+NAME_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+LONG_NAME = 40
+WRITE_ACTIONS = ("create", "update", "delete")
 
 _servers = weakref.WeakSet()
 
@@ -75,6 +85,8 @@ class MCPServer:
         exclude=(),
         exclude_apps=(),
         models="tools",
+        allow_writes=(),
+        list_page_size=None,
     ):
         if models not in ("tools", "generic"):
             raise ValueError("models must be 'tools' or 'generic'.")
@@ -89,7 +101,12 @@ class MCPServer:
         self.models = models
         self.exclude = list(exclude)
         self.exclude_apps = list(exclude_apps)
+        self.allow_writes = list(allow_writes)
+        self._list_page_size = list_page_size
         self._registry = {}
+        self._admin_sites = []
+        self._own_providers = set()
+        self._held_back = []
         self._functions = []
         self._removed = set()
         self._error_handlers = []
@@ -115,6 +132,13 @@ class MCPServer:
         if self._permission is not None:
             return self._permission
         return conf.get("PERMISSION")
+
+    @property
+    def list_page_size(self):
+        """Page size of ``*/list`` methods; None or 0 sends everything at once."""
+        if self._list_page_size is not None:
+            return self._list_page_size
+        return conf.get("LIST_PAGE_SIZE")
 
     @property
     def allowed_origins(self):
@@ -157,6 +181,34 @@ class MCPServer:
         if key not in self._registry:
             raise NotRegistered(f"{key!r} is not registered on {self!r}.")
         del self._registry[key]
+        self.clear_cache()
+
+    def register_admin(
+        self,
+        site=None,
+        *,
+        exclude=(),
+        actions=("list", "get"),
+        model_actions=None,
+        exposure=None,
+        provider_class=None,
+    ):
+        """Expose every model of an ``AdminSite`` through an ``AdminProvider``.
+
+        Providers are built with the catalog, so the site's registry is complete
+        whatever the import order. Models registered on the server win."""
+        if site is None:
+            from django.contrib.admin import site
+        self._admin_sites.append(
+            {
+                "site": site,
+                "exclude": list(exclude),
+                "actions": list(actions),
+                "model_actions": dict(model_actions or {}),
+                "exposure": exposure,
+                "provider_class": provider_class,
+            }
+        )
         self.clear_cache()
 
     def is_registered(self, key):
@@ -222,27 +274,37 @@ class MCPServer:
             self._catalog = self.build_catalog()
         return self._catalog
 
-    def build_catalog(self):
-        items = [
-            item
-            for provider in self._registry.values()
-            for item in provider.get_items()
-        ]
-        items += [Item(spec) for spec in self._functions]
-        if self.models == "generic":
-            from .generic import build_items
-            from .model_provider import ModelProvider
+    def get_providers(self):
+        """Registered providers, then those built by ``register_admin``."""
+        providers = list(self._registry.values())
+        if self._admin_sites:
+            from .admin_provider import build_admin_providers
 
-            model_providers = [
-                provider
-                for provider in self._registry.values()
-                if isinstance(provider, ModelProvider)
-            ]
-            if model_providers:
-                items += build_items(self, model_providers)
+            providers += build_admin_providers(self, self._admin_sites)
+        return providers
+
+    def build_catalog(self):
+        from .model_provider import ModelProvider
+
+        self._own_providers = set()
+        providers = self.get_providers()
+        items = [item for provider in providers for item in provider.get_items()]
+        items += [Item(spec) for spec in self._functions]
+        generic = [
+            provider
+            for provider in providers
+            if isinstance(provider, ModelProvider)
+            and provider.get_exposure() == "generic"
+        ]
+        if generic:
+            from .generic import build_items
+
+            items += build_items(self, generic)
         exclude = [*conf.get("EXCLUDE"), *self.exclude]
         exclude_apps = {*conf.get("EXCLUDE_APPS"), *self.exclude_apps}
         catalog = {kind: {} for kind in KINDS}
+        self._held_back = []
+        invalid = []
         for item in items:
             identifier = item.identifier
             if (item.kind, identifier) in self._removed:
@@ -251,6 +313,12 @@ class MCPServer:
                 continue
             if any(fnmatch.fnmatchcase(identifier, pattern) for pattern in exclude):
                 continue
+            if item.kind == "tool" and not item.spec.hints["readOnlyHint"]:
+                if not self.writes_allowed(item.module, item.provider):
+                    self._held_back.append(item)
+                    continue
+            if item.kind != "resource" and not NAME_PATTERN.match(identifier):
+                invalid.append(f"{identifier!r} ({item.source})")
             bucket = catalog[item.kind]
             if identifier in bucket:
                 raise ImproperlyConfigured(
@@ -258,7 +326,44 @@ class MCPServer:
                     f"{bucket[identifier].source} and {item.source}."
                 )
             bucket[identifier] = item
+        if invalid:
+            raise InvalidName(
+                f"Invalid MCP names on {self!r}: {', '.join(invalid)}. Tool and "
+                f"prompt names must match {NAME_PATTERN.pattern}."
+            )
         return catalog
+
+    @property
+    def held_back(self):
+        """Write tools of third-party apps left out by ``ALLOW_WRITES``."""
+        self.catalog
+        return list(self._held_back)
+
+    # --- third-party writes -------------------------------------------------
+
+    def is_third_party(self, app_config):
+        """An app installed as a package, not part of the project."""
+        if app_config.name == "xprez_mcp":
+            return False
+        parts = Path(app_config.path).parts
+        return "site-packages" in parts or "dist-packages" in parts
+
+    def writes_allowed(self, module, provider=None):
+        """Whether write tools from ``module`` (or ``provider``) are exposed."""
+        if provider is not None:
+            if provider in getattr(self, "_own_providers", ()):
+                return True
+            module = type(provider).__module__
+        config = apps.get_containing_app_config(module) if module else None
+        if config is None or not self.is_third_party(config):
+            return True
+        patterns = [*conf.get("ALLOW_WRITES"), *self.allow_writes]
+        return any(fnmatch.fnmatchcase(config.label, pattern) for pattern in patterns)
+
+    def mark_own(self, provider):
+        """Providers the server built itself (``register_admin``) count as the
+        project's: their writes are opt-in through ``actions`` already."""
+        self._own_providers.add(provider)
 
     def get_items(self, kind, ctx):
         return [item for item in self.catalog[kind].values() if item.is_allowed(ctx)]
@@ -386,12 +491,31 @@ class MCPServer:
             entry["annotations"] = hints
         return entry
 
+    def paginate(self, items, params):
+        """``(page, next_cursor)``: keyset paging by identifier when enabled."""
+        size = self.list_page_size
+        if not size:
+            return items, None
+        items = sorted(items, key=lambda item: item.identifier)
+        cursor = params.get("cursor")
+        if cursor is not None:
+            after = _decode_list_cursor(cursor)
+            items = [item for item in items if item.identifier > after]
+        if len(items) <= size:
+            return items, None
+        page = items[:size]
+        return page, _encode_list_cursor(page[-1].identifier)
+
+    def list_result(self, key, entries, next_cursor):
+        result = {key: entries}
+        if next_cursor:
+            result["nextCursor"] = next_cursor
+        return result
+
     def list_tools(self, ctx, params):
-        return {
-            "tools": [
-                self.describe_tool(item, ctx) for item in self.get_items("tool", ctx)
-            ]
-        }
+        page, cursor = self.paginate(self.get_items("tool", ctx), params)
+        tools = [self.describe_tool(item, ctx) for item in page]
+        return self.list_result("tools", tools, cursor)
 
     def call_tool(self, ctx, params):
         name = params.get("name")
@@ -444,22 +568,22 @@ class MCPServer:
         return entry
 
     def list_resources(self, ctx, params):
-        items = self.get_items("resource", ctx)
-        return {
-            "resources": [
-                self.describe_resource(item)
-                for item in items
-                if not item.spec.is_template
-            ]
-        }
+        items = [
+            item
+            for item in self.get_items("resource", ctx)
+            if not item.spec.is_template
+        ]
+        page, cursor = self.paginate(items, params)
+        resources = [self.describe_resource(item) for item in page]
+        return self.list_result("resources", resources, cursor)
 
     def list_resource_templates(self, ctx, params):
-        items = self.get_items("resource", ctx)
-        return {
-            "resourceTemplates": [
-                self.describe_resource(item) for item in items if item.spec.is_template
-            ]
-        }
+        items = [
+            item for item in self.get_items("resource", ctx) if item.spec.is_template
+        ]
+        page, cursor = self.paginate(items, params)
+        templates = [self.describe_resource(item) for item in page]
+        return self.list_result("resourceTemplates", templates, cursor)
 
     def resolve_resource(self, ctx, uri):
         items = self.get_items("resource", ctx)
@@ -501,11 +625,9 @@ class MCPServer:
         return entry
 
     def list_prompts(self, ctx, params):
-        return {
-            "prompts": [
-                self.describe_prompt(item) for item in self.get_items("prompt", ctx)
-            ]
-        }
+        page, cursor = self.paginate(self.get_items("prompt", ctx), params)
+        prompts = [self.describe_prompt(item) for item in page]
+        return self.list_result("prompts", prompts, cursor)
 
     def get_prompt(self, ctx, params):
         name = params.get("name")
@@ -571,6 +693,20 @@ class MCPServer:
             if item.spec.uri == uri_template:
                 return item, {}
         return None, None
+
+
+def _encode_list_cursor(identifier):
+    return base64.urlsafe_b64encode(identifier.encode()).decode().rstrip("=")
+
+
+def _decode_list_cursor(cursor):
+    if not isinstance(cursor, str):
+        raise RpcError(INVALID_PARAMS, "Invalid cursor.")
+    try:
+        padded = cursor + "=" * (-len(cursor) % 4)
+        return base64.b64decode(padded, altchars=b"-_", validate=True).decode()
+    except (ValueError, UnicodeDecodeError):
+        raise RpcError(INVALID_PARAMS, "Invalid cursor.") from None
 
 
 def _user_pk(ctx):

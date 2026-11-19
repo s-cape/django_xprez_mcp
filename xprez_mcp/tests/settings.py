@@ -2,9 +2,11 @@ SECRET_KEY = "test-secret"
 DEBUG = False
 ALLOWED_HOSTS = ["testserver"]
 INSTALLED_APPS = [
+    "django.contrib.admin",
     "django.contrib.contenttypes",
     "django.contrib.auth",
     "django.contrib.sessions",
+    "django.contrib.messages",
     "xprez_mcp",
     "xprez_mcp.tests.testapp",
 ]
@@ -15,6 +17,20 @@ USE_TZ = True
 MIDDLEWARE = [
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
+    "django.contrib.messages.middleware.MessageMiddleware",
+]
+TEMPLATES = [
+    {
+        "BACKEND": "django.template.backends.django.DjangoTemplates",
+        "APP_DIRS": True,
+        "OPTIONS": {
+            "context_processors": [
+                "django.template.context_processors.request",
+                "django.contrib.auth.context_processors.auth",
+                "django.contrib.messages.context_processors.messages",
+            ]
+        },
+    }
 ]
 XPREZ_MCP = {
     "NAME": "test",

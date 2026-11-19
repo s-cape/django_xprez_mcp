@@ -1,3 +1,5 @@
+from django.core.exceptions import ImproperlyConfigured
+
 PARSE_ERROR = -32700
 INVALID_REQUEST = -32600
 METHOD_NOT_FOUND = -32601
@@ -12,6 +14,10 @@ class AlreadyRegistered(Exception):
 
 class NotRegistered(Exception):
     pass
+
+
+class InvalidName(ImproperlyConfigured):
+    """A tool or prompt name outside the portable character set."""
 
 
 class AuthenticationFailed(Exception):

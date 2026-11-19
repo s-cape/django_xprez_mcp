@@ -29,6 +29,7 @@ def check_servers(app_configs=None, **kwargs):
                 )
             )
         names.setdefault(server.name, []).append(server)
+        errors += check_names(server)
     for name, servers in names.items():
         if len(servers) > 1:
             errors.append(
@@ -41,3 +42,37 @@ def check_servers(app_configs=None, **kwargs):
                 )
             )
     return errors
+
+
+def check_names(server):
+    from .errors import InvalidName
+    from .server import LONG_NAME, NAME_PATTERN
+
+    try:
+        catalog = server.catalog
+    except InvalidName as error:
+        return [
+            checks.Error(
+                str(error),
+                hint="Rename them (tool_names, name, namespace or the function).",
+                obj=server,
+                id="xprez_mcp.E003",
+            )
+        ]
+    long = [
+        identifier
+        for kind in ("tool", "prompt")
+        for identifier in catalog[kind]
+        if NAME_PATTERN.match(identifier) and len(identifier) > LONG_NAME
+    ]
+    if not long:
+        return []
+    return [
+        checks.Warning(
+            f"MCP server {server.name!r} has names over {LONG_NAME} characters: "
+            f"{', '.join(sorted(long))}.",
+            hint="Clients that prefix the server name may reject long names.",
+            obj=server,
+            id="xprez_mcp.W001",
+        )
+    ]

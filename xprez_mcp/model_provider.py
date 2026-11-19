@@ -26,6 +26,8 @@ from .permissions import check_permission
 from .providers import Provider
 
 ACTIONS = ("list", "get", "create", "update", "delete")
+WRITE_ACTIONS = ("create", "update", "delete")
+EXPOSURES = ("tools", "generic")
 RESERVED_ARGUMENTS = {"query", "limit", "cursor", "ordering"}
 
 _HINTS = {
@@ -93,7 +95,48 @@ def _base_annotation(field):
     return Any
 
 
-def _make_function(qualname, module, parameters, impl):
+def is_writable(opts, name):
+    """An editable model field that a ``ModelForm`` can write."""
+    try:
+        field = opts.pk if name == "pk" else opts.get_field(name)
+    except FieldDoesNotExist:
+        return False
+    if field.auto_created or not field.editable or field.primary_key:
+        return False
+    if field.one_to_many or isinstance(field, models.FileField):
+        return False
+    return field.concrete or field.many_to_many
+
+
+def write_parameter(opts, name, partial, required=None):
+    """``(name, annotation, default)`` of a writable field."""
+    try:
+        field = opts.get_field(name)
+    except FieldDoesNotExist:
+        field = None
+    annotation = Any if field is None else field_annotation(field)
+    if required is None:
+        if field is None or field.many_to_many:
+            required = False
+        else:
+            required = not (field.blank or field.null or field.has_default())
+    required = required and not partial
+    return (name, annotation, inspect.Parameter.empty if required else None)
+
+
+def form_error(form):
+    """A readable ``ToolError`` from an invalid form or formset."""
+    errors = {
+        field: [error["message"] for error in messages]
+        for field, messages in form.errors.get_json_data().items()
+    }
+    summary = "; ".join(
+        f"{field}: {' '.join(messages)}" for field, messages in errors.items()
+    )
+    return ToolError(f"Invalid data. {summary}", data={"fields": errors})
+
+
+def make_function(qualname, module, parameters, impl):
     """A function with a computed signature, so generated tools get schemas and
     argument conversion from the same machinery as hand-written ones."""
 
@@ -160,6 +203,7 @@ class ModelProvider(Provider):
     descriptions = {}
     resources = False
     resource_scheme = None
+    exposure = None  # "tools" | "generic"; None follows MCPServer(models=...)
     page_size = 20
     max_page_size = 100
 
@@ -192,6 +236,10 @@ class ModelProvider(Provider):
         unknown = set(self.actions) - set(ACTIONS)
         if unknown:
             raise ImproperlyConfigured(f"{label}: unknown actions {sorted(unknown)}.")
+        if self.exposure is not None and self.exposure not in EXPOSURES:
+            raise ImproperlyConfigured(
+                f"{label}: exposure must be one of {EXPOSURES} or None."
+            )
         if (self.fields is None) == (self.serializer is None):
             raise ImproperlyConfigured(
                 f"{label} needs fields or a serializer (not both); no field is "
@@ -223,6 +271,9 @@ class ModelProvider(Provider):
             raise ImproperlyConfigured(
                 f"{type(self).__qualname__}: {self.opts.label} has no field {name!r}."
             ) from None
+
+    def get_exposure(self):
+        return self.exposure or self.server.models
 
     def get_name(self):
         if self.name:
@@ -279,13 +330,23 @@ class ModelProvider(Provider):
 
         return {action: fill(value) for action, value in self.permissions.items()}
 
+    def writes_allowed(self):
+        """Writes of third-party providers need ``ALLOW_WRITES``."""
+        return self.server.writes_allowed(None, self)
+
     def has_action_permission(self, ctx, action):
         if action not in self.actions:
+            return False
+        if action in WRITE_ACTIONS and not self.writes_allowed():
             return False
         return check_permission(self.get_permissions().get(action), ctx)
 
     def has_object_permission(self, ctx, action, instance):
         return True
+
+    def generic_actions(self):
+        """The generic tools this provider takes part in."""
+        return set(self.actions)
 
     def allows(self, ctx, action):
         """The provider and the action are allowed (not per object)."""
@@ -395,6 +456,9 @@ class ModelProvider(Provider):
             return list(self.ordering)
         return list(self.opts.ordering) or ["pk"]
 
+    def get_list_ordering(self, ctx):
+        return self.get_ordering()
+
     def get_object(self, ctx, value, action="get"):
         queryset = self.get_queryset(ctx)
         try:
@@ -430,8 +494,9 @@ class ModelProvider(Provider):
         return {name: self.field_value(instance, name) for name in fields}
 
     def field_value(self, instance, name):
+        opts = instance._meta
         try:
-            field = self.opts.pk if name == "pk" else self.opts.get_field(name)
+            field = opts.pk if name == "pk" else opts.get_field(name)
         except FieldDoesNotExist:
             value = getattr(instance, name)
             return value() if callable(value) else value
@@ -469,15 +534,7 @@ class ModelProvider(Provider):
         return names
 
     def _is_writable(self, name):
-        try:
-            field = self.opts.pk if name == "pk" else self.opts.get_field(name)
-        except FieldDoesNotExist:
-            return False
-        if field.auto_created or not field.editable or field.primary_key:
-            return False
-        if field.one_to_many or isinstance(field, models.FileField):
-            return False
-        return field.concrete or field.many_to_many
+        return is_writable(self.opts, name)
 
     def write_parameters(self, partial):
         serializer_fields = {}
@@ -485,21 +542,10 @@ class ModelProvider(Provider):
             serializer_fields = self.serializer().fields
         params = []
         for name in self.get_write_fields():
-            try:
-                field = self.opts.get_field(name)
-            except FieldDoesNotExist:
-                field = None
-            annotation = Any if field is None else field_annotation(field)
+            required = None
             if name in serializer_fields:
                 required = serializer_fields[name].required
-            elif field is None or field.many_to_many:
-                required = False
-            else:
-                required = not (field.blank or field.null or field.has_default())
-            required = required and not partial
-            params.append(
-                (name, annotation, inspect.Parameter.empty if required else None)
-            )
+            params.append(write_parameter(self.opts, name, partial, required))
         return params
 
     def validate(self, ctx, data, instance=None):
@@ -516,14 +562,7 @@ class ModelProvider(Provider):
         form_class = modelform_factory(self.model, form=self.form, fields=list(data))
         form = form_class(data=data, instance=instance)
         if not form.is_valid():
-            errors = {
-                field: [error["message"] for error in messages]
-                for field, messages in form.errors.get_json_data().items()
-            }
-            summary = "; ".join(
-                f"{field}: {' '.join(messages)}" for field, messages in errors.items()
-            )
-            raise ToolError(f"Invalid data. {summary}", data={"fields": errors})
+            raise form_error(form)
         return {name: form.cleaned_data[name] for name in data}
 
     def _split_many(self, data):
@@ -572,7 +611,8 @@ class ModelProvider(Provider):
         if query:
             queryset = self.search(ctx, queryset, query)
         queryset = self.filter_queryset(ctx, queryset, filters)
-        queryset = queryset.order_by(*([ordering] if ordering else self.get_ordering()))
+        ordering = [ordering] if ordering else self.get_list_ordering(ctx)
+        queryset = queryset.order_by(*ordering)
         count = queryset.count()
         page = list(queryset[offset : offset + limit])
         more = offset + limit < count
@@ -655,7 +695,7 @@ class ModelProvider(Provider):
             def impl(provider, ctx, _action=action, **kwargs):
                 return provider.run(ctx, _action, **kwargs)
 
-            functions[action] = _make_function(
+            functions[action] = make_function(
                 f"{type(self).__qualname__}.{action}",
                 type(self).__module__,
                 self.action_parameters(action),
@@ -677,7 +717,7 @@ class ModelProvider(Provider):
                 for param in self.action_parameters(action)
                 if action in ("list", "create") or param[0] != self.lookup_argument
             ]
-            functions[action] = _make_function(
+            functions[action] = make_function(
                 f"{type(self).__qualname__}.{action}",
                 type(self).__module__,
                 params,
@@ -711,7 +751,7 @@ class ModelProvider(Provider):
             def read_list(provider, ctx):
                 return provider.run_list(ctx)
 
-            func = _make_function(
+            func = make_function(
                 f"{type(self).__qualname__}.{name}",
                 type(self).__module__,
                 [],
@@ -733,7 +773,7 @@ class ModelProvider(Provider):
             def read_one(provider, ctx, **kwargs):
                 return provider.run_get(ctx, **kwargs)
 
-            func = _make_function(
+            func = make_function(
                 f"{type(self).__qualname__}.{name}_detail",
                 type(self).__module__,
                 [(argument, self.lookup_annotation, inspect.Parameter.empty)],
@@ -763,7 +803,7 @@ class ModelProvider(Provider):
 
     def get_items(self):
         items = super().get_items()
-        if self.server.models == "tools":
+        if self.get_exposure() == "tools":
             items += [Item(spec, self) for spec in self.get_action_specs()]
         items += [Item(spec, self) for spec in self.get_resource_specs()]
         return items
