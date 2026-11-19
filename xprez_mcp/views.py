@@ -73,7 +73,7 @@ class MCPView(View):
             message = json.loads(request.body)
         except RequestDataTooBig:
             return rpc_error(None, INVALID_REQUEST, "Request too large.")
-        except ValueError:
+        except (ValueError, RecursionError):  # RecursionError: deeply nested
             return rpc_error(None, PARSE_ERROR, "Parse error.")
         if isinstance(message, list):
             return rpc_error(None, INVALID_REQUEST, "Batches are not supported.")

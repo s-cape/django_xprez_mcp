@@ -8,6 +8,16 @@ Status: phases 1 (core), 2 (models) and 3 (admin) implemented; phases 2 and
 3 are not yet proven in a project. Sections marked *(planned)* describe API
 that does not exist yet.
 
+Breaking in 0.5:
+
+- `MCPServer(models=)` is `MCPServer(exposure=)`.
+- Inline tools take `parent` and `row` in both modes. Deleting an inline row
+  returns `{"deleted": True, "row": ...}`.
+- `models_list`'s `lookup` is the result field whose value is passed as `id`
+  (the pk column name when `lookup_field` is `"pk"`, so `user_ptr` on a
+  multi-table child).
+- `server.held_back` is `server.withheld_writes`.
+
 ## Goals
 
 - Class-based and registry-based, like `django.contrib.admin`: register,
@@ -213,7 +223,8 @@ class ClientProvider(ModelProvider):
   through `perform_create` / `perform_update` / `perform_delete` inside a
   transaction, so projects with a service layer keep it.
 - `resources = True` adds `<scheme>://<name>` (the first page) and
-  `<scheme>://<name>/{lookup}`, with completion when the lookup is a string.
+  `<scheme>://<name>/{lookup}`, with completion when the lookup is a string
+  (only for users who may `list`: it enumerates lookups).
 - Generated tools are ordinary items. Excludes, `unregister_tool`, permissions
   and `mcp_inspect` treat them like decorated ones. Their schemas come from the
   model fields through the same machinery as type hints. Decorated methods on
@@ -224,8 +235,8 @@ class ClientProvider(ModelProvider):
 How model providers appear is a server option; the providers stay the same.
 
 ```python
-mcp = MCPServer(models="tools")    # default: clients_list, clients_get, ...
-staff_mcp = MCPServer(models="generic")
+mcp = MCPServer(exposure="tools")  # default: clients_list, clients_get, ...
+staff_mcp = MCPServer(exposure="generic")
 ```
 
 A provider can override the server default, so a few
@@ -234,7 +245,7 @@ on the same server:
 
 ```python
 class ClientProvider(ModelProvider):
-    exposure = "tools"  # "tools" | "generic" | None (the server's models=)
+    exposure = "tools"  # "tools" | "generic" | None (the server's exposure=)
 ```
 
 Tools per model have precise schemas and descriptions and suit a small,
@@ -248,8 +259,10 @@ exposes a fixed set instead, however many models are registered:
 | `record_get(model, id)` | `get` of one model |
 | `record_create` / `record_update` / `record_delete` | Present only when some model allows the action |
 
-`model` is an enum built per user from the providers they pass, so
-`tools/list` still hides what they cannot use. Filters and fields are checked
+`lookup` on each model is the result field whose value is passed as `id`: the
+pk column name when `lookup_field` is `"pk"` (so `user_ptr` on a multi-table
+child), otherwise the lookup field. `model` is an enum built per user from the
+providers they pass, so `tools/list` still hides what they cannot use. Filters and fields are checked
 per call against that model's provider; an invalid one returns the valid
 options so the model can retry. Decorated tools and generated resources of
 model providers are exposed as usual. Two model providers with the same
@@ -311,10 +324,14 @@ therefore never adds a write tool on its own.
   admin's form only shows masked (`ReadOnlyPasswordHashField`, so a user
   admin never sends password hashes), on the model and its inlines. A name in
   `hidden_fields` is hidden on every inline that has a field of that name.
+  Search fields and filters whose path goes through a hidden name are
+  dropped too, so matches and counts do not reveal the value.
 - Search: `get_search_results(request, queryset, query)`, with `distinct()`
   when it may return duplicates. `query` exists when the admin has
-  `search_fields`.
-- Filters: `list_filter` entries. A field name becomes a filter typed by the
+  `search_fields`. When `get_search_fields(request)` reaches a hidden field,
+  the admin's search is replaced by the plain one over the remaining fields.
+- Filters: `list_filter` entries; per call, a filter missing from
+  `get_list_filter(request)` is refused. A field name becomes a filter typed by the
   field (choices as an enum, relations by pk, booleans, dates as `__gte` /
   `__lte` pairs); `(field, FieldListFilter)` filters by the field. A
   `SimpleListFilter` becomes a string argument named by its `parameter_name`,
@@ -361,7 +378,8 @@ classes take the `ModelAdmin`'s module, so `EXCLUDE_APPS` applies by the
 admin's app.
 `mcp_exposed = False` on a `ModelAdmin`, an inline or a model keeps it out of
 `register_admin` and of the parent's inline tools, wherever it is
-registered (credentials, for example).
+registered (credentials, for example). Registering such a model or admin
+explicitly (`ModelProvider` or `AdminProvider`) raises `ImproperlyConfigured`.
 
 **Inlines.** Inline rows are edited one at a time through tools scoped to
 the parent, never nested in the parent's payload (large nested schemas are
@@ -369,10 +387,10 @@ where models make mistakes, and "missing row" would be ambiguous):
 
 | Tool | Generic mode |
 |---|---|
-| `clients_contacts_list(parent, limit, cursor)` | `record_inline_list(model, id, inline, ...)` |
-| `clients_contacts_create(parent, ...)` | `record_inline_create(model, id, inline, data)` |
-| `clients_contacts_update(parent, id, ...)` | `record_inline_update(model, id, inline, row, data)` |
-| `clients_contacts_delete(parent, id)` | `record_inline_delete(model, id, inline, row)` |
+| `clients_contacts_list(parent, limit, cursor)` | `record_inline_list(model, parent, inline, ...)` |
+| `clients_contacts_create(parent, ...)` | `record_inline_create(model, parent, inline, data)` |
+| `clients_contacts_update(parent, row, ...)` | `record_inline_update(model, parent, inline, row, data)` |
+| `clients_contacts_delete(parent, row)` | `record_inline_delete(model, parent, inline, row)` |
 
 - The inlines are those of `get_formsets_with_inlines(request, obj)`, so
   per-user and per-object rules hold; `inlines = [ContactInline]` limits
@@ -425,8 +443,8 @@ XPREZ_MCP = {"ALLOW_WRITES": ["taggit", "filer"]}  # app labels, globs allowed
 
 Reads, resources and prompts are exposed by default. Per server,
 `MCPServer(allow_writes=[...])` adds to the setting. Model providers of such
-apps lose their write actions in generic mode too. `server.held_back` and
-`mcp_inspect` list the held back tools. `register_admin` providers count as
+apps lose their write actions in generic mode too. `server.withheld_writes` and
+`mcp_inspect` list the withheld tools. `register_admin` providers count as
 the project's own: their writes are already opt-in through `actions`.
 `MCPServer.is_third_party(app_config)` can be overridden.
 
@@ -651,7 +669,7 @@ class ProjectTokenAdmin(TokenAdmin):
 ```
 
 `Token` and `TokenAdmin` set `mcp_exposed = False`, which keeps them out of
-`AdminProvider`: an MCP client does not manage the credentials it could
+every provider: an MCP client does not manage the credentials it could
 authenticate with.
 
 ## Settings

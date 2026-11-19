@@ -396,6 +396,32 @@ class OneToOneValueTests(TestCase):
         self.assertIsNone(provider.field_value(Note(text="loose"), "target"))
 
 
+class ExposureGuardTests(TestCase):
+    def test_complete_lookup_needs_list(self):
+        Client.objects.create(slug="acme", name="Acme")
+        attributes = {
+            "fields": ["slug"],
+            "lookup_field": "slug",
+            "permissions": {"list": "staff"},
+        }
+        provider = type("P", (ModelProvider,), attributes)(
+            MCPServer(name="complete"), model=Client
+        )
+        alice = User.objects.create_user("alice")
+        bob = User.objects.create_user("bob", is_staff=True)
+        for user, expected in [(alice, []), (bob, ["acme"])]:
+            ctx = CallContext(server=provider.server, user=user)
+            self.assertEqual(list(provider.complete_lookup(ctx, "a")), expected)
+
+    def test_unexposed_model_refused(self):
+        from xprez_mcp.contrib.tokens.models import Token
+
+        with self.assertRaisesMessage(ImproperlyConfigured, "mcp_exposed"):
+            type("P", (ModelProvider,), {"fields": ["name"]})(
+                MCPServer(name="unexposed"), model=Token
+            )
+
+
 class RelatedLabelsTests(TestCase):
     @classmethod
     def setUpTestData(cls):
@@ -509,7 +535,7 @@ class ConfigurationTests(SimpleTestCase):
         self.assertFalse(provider.has_action_permission(ctx, "update"))
 
     def test_generic_name_clash(self):
-        server = MCPServer(name="clash", models="generic")
+        server = MCPServer(name="clash", exposure="generic")
         server.register(Client, type("A", (ModelProvider,), {"fields": ["name"]}))
         server.register(
             type("B", (ModelProvider,), {"fields": ["name"], "model": Client})
@@ -533,7 +559,7 @@ class FilterNamedActionTests(TestCase):
             fields = ["id", "name"]
             filters = {"action": "name"}
 
-        generic = MCPServer(name="action-generic", models="generic")
+        generic = MCPServer(name="action-generic", exposure="generic")
         tools = MCPServer(name="action-tools")
         generic.register(Tag, TagProvider)
         tools.register(Tag, TagProvider)

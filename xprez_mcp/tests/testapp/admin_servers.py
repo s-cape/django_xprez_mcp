@@ -6,7 +6,7 @@ from .admin import site
 from .models import Client
 
 admin_mcp = MCPServer(name="admin")
-admin_generic_mcp = MCPServer(name="admin-generic", models="generic")
+admin_generic_mcp = MCPServer(name="admin-generic", exposure="generic")
 
 
 class ClientAdminProvider(AdminProvider):

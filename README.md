@@ -75,7 +75,7 @@ class NoteProvider(ModelProvider):
         return Note.objects.filter(owner=ctx.user)
 ```
 
-With many models, `MCPServer(models="generic")` exposes them through a few
+With many models, `MCPServer(exposure="generic")` exposes them through a few
 shared tools (`models_list`, `records_search`, `record_get`, ...) instead of
 tools per model. A provider can choose for itself with `exposure`.
 

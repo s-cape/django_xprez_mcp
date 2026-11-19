@@ -8,6 +8,7 @@ from django.core.exceptions import ImproperlyConfigured
 from . import schema
 from .errors import InvalidArguments
 from .items import Item, ToolSpec
+from .model_provider import HINTS
 
 MODEL = Annotated[str, "A model from models_list"]
 ID = Annotated[str | int, "The record's lookup value (see models_list)"]
@@ -67,7 +68,7 @@ ROW = Annotated[str | int, "The inline row's id"]
 def record_inline_list(
     ctx,
     model: MODEL,
-    id: ID,
+    parent: ID,
     inline: INLINE,
     limit: Annotated[int | None, "Results per page"] = None,
     cursor: Annotated[str | None, "next_cursor from the previous page"] = None,
@@ -79,7 +80,7 @@ def record_inline_list(
 def record_inline_create(
     ctx,
     model: MODEL,
-    id: ID,
+    parent: ID,
     inline: INLINE,
     data: Annotated[dict[str, Any], "Field values"],
 ):
@@ -89,7 +90,7 @@ def record_inline_create(
 def record_inline_update(
     ctx,
     model: MODEL,
-    id: ID,
+    parent: ID,
     inline: INLINE,
     row: ROW,
     data: Annotated[dict[str, Any], "Fields to change"],
@@ -97,22 +98,29 @@ def record_inline_update(
     """Change a row of a record's inline. Only the fields given change."""
 
 
-def record_inline_delete(ctx, model: MODEL, id: ID, inline: INLINE, row: ROW):
+def record_inline_delete(ctx, model: MODEL, parent: ID, inline: INLINE, row: ROW):
     """Remove a row from a record's inline."""
 
 
+def _hints(action):
+    if action is None:
+        return HINTS["list"]
+    else:
+        return HINTS[action.removeprefix("inline_")]
+
+
 TOOLS = [
-    (models_list, None, {"read_only": True}),
-    (records_search, "list", {"read_only": True}),
-    (record_get, "get", {"read_only": True}),
-    (record_create, "create", {}),
-    (record_update, "update", {"idempotent": True}),
-    (record_delete, "delete", {"destructive": True}),
-    (record_action, "action", {}),
-    (record_inline_list, "inline_list", {"read_only": True}),
-    (record_inline_create, "inline_create", {}),
-    (record_inline_update, "inline_update", {"idempotent": True}),
-    (record_inline_delete, "inline_delete", {"destructive": True}),
+    (models_list, None),
+    (records_search, "list"),
+    (record_get, "get"),
+    (record_create, "create"),
+    (record_update, "update"),
+    (record_delete, "delete"),
+    (record_action, "action"),
+    (record_inline_list, "inline_list"),
+    (record_inline_create, "inline_create"),
+    (record_inline_update, "inline_update"),
+    (record_inline_delete, "inline_delete"),
 ]
 
 
@@ -153,43 +161,61 @@ class GenericToolSpec(ToolSpec):
             )
         return available[name]
 
-    def run(self, ctx, model=None, id=None, data=None, filters=None, **options):
+    def run(
+        self, ctx, model=None, id=None, data=None, filters=None, parent=None, **options
+    ):
         if self.action is None:
             providers = self.available(ctx).values()
             return {"models": [provider.describe(ctx) for provider in providers]}
-        provider = self.resolve(ctx, model)
-        if self.action == "action":
-            ids = [parse_lookup(provider, value) for value in options["ids"]]
-            return provider.run_admin_action(ctx, options["action"], ids)
-        if self.action == "inline_list" or self.action.startswith("inline_"):
-            return self.run_inline(ctx, provider, id, data, **options)
+        else:
+            provider = self.resolve(ctx, model)
+            arguments = self.arguments(provider, id, data, filters, parent, options)
+            return provider.run(ctx, self.action, **arguments)
+
+    def arguments(self, provider, id, data, filters, parent, options):
         if self.action == "list":
             arguments = dict(filters or {})
-            arguments.update({k: v for k, v in options.items() if v is not None})
-            return provider.run(ctx, "list", **parse(provider, "list", arguments))
-        arguments = {}
-        if self.action in ("create", "update"):
-            arguments.update(parse(provider, self.action, data))
-        if self.action != "create":
-            arguments[provider.lookup_argument] = parse_lookup(provider, id)
-        return provider.run(ctx, self.action, **arguments)
-
-    def run_inline(self, ctx, provider, id, data, inline, row=None, **options):
-        parent = parse_lookup(provider, id)
-        if self.action == "inline_list":
-            options = {k: v for k, v in options.items() if v is not None}
-            return provider.run_inline_list(ctx, inline, parent, **options)
-        if inline not in provider.inline_specs:
-            raise InvalidArguments(
-                f"Unknown inline {inline!r}. Available: "
-                f"{sorted(provider.inline_specs)}."
+            arguments.update(
+                {key: value for key, value in options.items() if value is not None}
             )
-        operation = self.action[len("inline_") :]
-        arguments = {}
-        if operation != "delete":
-            func = provider.inline_argument_function(inline, operation)
-            arguments = parse_function(func, data)
-        return provider.run_inline(ctx, operation, inline, parent, row, **arguments)
+            return parse(provider, "list", arguments)
+        elif self.action == "action":
+            return {
+                "action": options["action"],
+                "ids": [parse_lookup(provider, value) for value in options["ids"]],
+            }
+        elif self.action.startswith("inline_"):
+            return self.inline_arguments(provider, data, parent, options)
+        else:
+            arguments = {}
+            if self.action in ("create", "update"):
+                arguments.update(parse(provider, self.action, data))
+            if self.action != "create":
+                arguments[provider.lookup_argument] = parse_lookup(provider, id)
+            return arguments
+
+    def inline_arguments(self, provider, data, parent, options):
+        inline = options["inline"]
+        provider.get_inline_spec(inline)
+        operation = self.action.removeprefix("inline_")
+        arguments = {"inline": inline, "parent": parse_lookup(provider, parent)}
+        if operation == "list":
+            arguments.update(
+                {
+                    key: value
+                    for key, value in options.items()
+                    if key != "inline" and value is not None
+                }
+            )
+            return arguments
+        else:
+            if operation != "create":
+                arguments["row"] = options["row"]
+            if operation != "delete":
+                arguments.update(
+                    parse_function(provider.argument_function(operation, inline), data)
+                )
+            return arguments
 
 
 class GenericItem(Item):
@@ -230,10 +256,12 @@ def build_items(server, providers):
             )
         by_name[name] = provider
     items = []
-    for func, action, hints in TOOLS:
+    for func, action in TOOLS:
         if action is not None and not any(
             action in provider.generic_actions() for provider in providers
         ):
             continue
-        items.append(GenericItem(GenericToolSpec(func, action, by_name, **hints)))
+        items.append(
+            GenericItem(GenericToolSpec(func, action, by_name, **_hints(action)))
+        )
     return items

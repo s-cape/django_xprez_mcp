@@ -48,7 +48,6 @@ MAX_COMPLETIONS = 100
 # What the Claude and OpenAI APIs accept; stricter than the MCP spec.
 NAME_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 LONG_NAME = 40
-WRITE_ACTIONS = ("create", "update", "delete")
 
 _servers = weakref.WeakSet()
 
@@ -83,13 +82,13 @@ class MCPServer:
         allowed_origins=None,
         exclude=(),
         exclude_apps=(),
-        models="tools",
+        exposure="tools",
         allow_writes=(),
         list_page_size=None,
         related_labels=None,
     ):
-        if models not in ("tools", "generic"):
-            raise ValueError("models must be 'tools' or 'generic'.")
+        if exposure not in ("tools", "generic"):
+            raise ValueError("exposure must be 'tools' or 'generic'.")
         self._name = name
         self._version = version
         self.title = title
@@ -98,7 +97,7 @@ class MCPServer:
         self._permission = permission
         self.allow_anonymous = allow_anonymous
         self._allowed_origins = allowed_origins
-        self.models = models
+        self.exposure = exposure
         self.exclude = list(exclude)
         self.exclude_apps = list(exclude_apps)
         self.allow_writes = list(allow_writes)
@@ -106,8 +105,8 @@ class MCPServer:
         self._related_labels = related_labels
         self._registry = {}
         self._admin_sites = []
-        self._own_providers = set()
-        self._held_back = []
+        self._trusted_providers = set()
+        self._withheld_writes = []
         self._functions = []
         self._removed = set()
         self._error_handlers = []
@@ -296,7 +295,7 @@ class MCPServer:
     def build_catalog(self):
         from .model_provider import ModelProvider
 
-        self._own_providers = set()
+        self._trusted_providers = set()
         providers = self.get_providers()
         items = [item for provider in providers for item in provider.get_items()]
         items += [Item(spec) for spec in self._functions]
@@ -313,7 +312,7 @@ class MCPServer:
         exclude = [*conf.get("EXCLUDE"), *self.exclude]
         exclude_apps = {*conf.get("EXCLUDE_APPS"), *self.exclude_apps}
         catalog = {kind: {} for kind in KINDS}
-        self._held_back = []
+        self._withheld_writes = []
         invalid = []
         for item in items:
             identifier = item.identifier
@@ -325,7 +324,7 @@ class MCPServer:
                 continue
             if item.kind == "tool" and not item.spec.hints["readOnlyHint"]:
                 if not self.writes_allowed(item.module, item.provider):
-                    self._held_back.append(item)
+                    self._withheld_writes.append(item)
                     continue
             if item.kind != "resource" and not NAME_PATTERN.match(identifier):
                 invalid.append(f"{identifier!r} ({item.source})")
@@ -344,10 +343,10 @@ class MCPServer:
         return catalog
 
     @property
-    def held_back(self):
+    def withheld_writes(self):
         """Write tools of third-party apps left out by ``ALLOW_WRITES``."""
         self.catalog
-        return list(self._held_back)
+        return list(self._withheld_writes)
 
     # --- third-party writes -------------------------------------------------
 
@@ -361,7 +360,7 @@ class MCPServer:
     def writes_allowed(self, module, provider=None):
         """Whether write tools from ``module`` (or ``provider``) are exposed."""
         if provider is not None:
-            if provider in getattr(self, "_own_providers", ()):
+            if provider in self._trusted_providers:
                 return True
             module = type(provider).__module__
         config = apps.get_containing_app_config(module) if module else None
@@ -370,10 +369,10 @@ class MCPServer:
         patterns = [*conf.get("ALLOW_WRITES"), *self.allow_writes]
         return any(fnmatch.fnmatchcase(config.label, pattern) for pattern in patterns)
 
-    def mark_own(self, provider):
+    def trust_writes(self, provider):
         """Providers the server built itself (``register_admin``) count as the
         project's: their writes are opt-in through ``actions`` already."""
-        self._own_providers.add(provider)
+        self._trusted_providers.add(provider)
 
     def get_items(self, kind, ctx):
         return [item for item in self.catalog[kind].values() if item.is_allowed(ctx)]
@@ -721,8 +720,4 @@ def _user_pk(ctx):
     return getattr(ctx.user, "pk", None)
 
 
-class DefaultMCPServer(MCPServer):
-    pass
-
-
-mcp = DefaultMCPServer()
+mcp = MCPServer()

@@ -7,6 +7,7 @@ from django.test import SimpleTestCase, TestCase
 
 from xprez_mcp import AdminProvider, MCPServer, ToolError
 from xprez_mcp.context import CallContext
+from xprez_mcp.errors import InvalidArguments
 
 from .test_models import ModelTestCase
 from .testapp.admin import ClientAdmin, site
@@ -271,7 +272,7 @@ class InlineTests(AdminTestCase):
     def test_update(self):
         self.structured(
             "clients_contacts_update",
-            {"parent": self.acme.pk, "id": self.ben.pk, "email": "ben@example.com"},
+            {"parent": self.acme.pk, "row": self.ben.pk, "email": "ben@example.com"},
             token="token-editor",
         )
         self.ben.refresh_from_db()
@@ -282,7 +283,7 @@ class InlineTests(AdminTestCase):
     def test_formset_validation(self):
         error = self.failed(
             "clients_contacts_update",
-            {"parent": self.acme.pk, "id": self.ben.pk, "primary": True},
+            {"parent": self.acme.pk, "row": self.ben.pk, "primary": True},
             token="token-editor",
         )
         self.assertIn("Only one contact can be primary.", error)
@@ -296,7 +297,7 @@ class InlineTests(AdminTestCase):
     def test_delete(self):
         self.structured(
             "clients_contacts_delete",
-            {"parent": self.acme.pk, "id": self.ben.pk},
+            {"parent": self.acme.pk, "row": self.ben.pk},
             token="token-root",
         )
         self.assertFalse(Contact.objects.filter(pk=self.ben.pk).exists())
@@ -304,7 +305,7 @@ class InlineTests(AdminTestCase):
     def test_wrong_parent(self):
         error = self.failed(
             "clients_contacts_update",
-            {"parent": self.hidden.pk, "id": self.ben.pk, "name": "x"},
+            {"parent": self.hidden.pk, "row": self.ben.pk, "name": "x"},
             token="token-root",
         )
         self.assertIn("No contacts row", error)
@@ -325,7 +326,7 @@ class GenericAdminTests(AdminTestCase):
     def test_inline_tools(self):
         data = self.structured(
             "record_inline_list",
-            {"model": "clients", "id": self.acme.pk, "inline": "contacts"},
+            {"model": "clients", "parent": self.acme.pk, "inline": "contacts"},
             token="token-editor",
         )
         self.assertEqual(data["count"], 2)
@@ -333,7 +334,7 @@ class GenericAdminTests(AdminTestCase):
             "record_inline_update",
             {
                 "model": "clients",
-                "id": self.acme.pk,
+                "parent": self.acme.pk,
                 "inline": "contacts",
                 "row": self.ben.pk,
                 "data": {"name": "Benjamin"},
@@ -346,7 +347,7 @@ class GenericAdminTests(AdminTestCase):
             "record_inline_create",
             {
                 "model": "clients",
-                "id": self.acme.pk,
+                "parent": self.acme.pk,
                 "inline": "contacts",
                 "data": {"nope": 1},
             },
@@ -380,13 +381,13 @@ class AdminConfigurationTests(SimpleTestCase):
             Bad(MCPServer(), model=Client)
 
     def test_register_admin_exclude(self):
-        server = MCPServer(models="generic")
+        server = MCPServer(exposure="generic")
         server.register_admin(site, exclude=[Tag, "testapp.client"])
         models = {provider.model for provider in server.get_providers()}
         self.assertEqual(models, {Industry})
 
     def test_register_admin_name_template(self):
-        server = MCPServer(models="generic")
+        server = MCPServer(exposure="generic")
         server.register_admin(site, name_template="{app_label}_{plural}")
         names = {provider.get_name() for provider in server.get_providers()}
         self.assertEqual(
@@ -433,6 +434,26 @@ class HiddenFieldsTests(TestCase):
         rows = provider.serialize(ctx, User.objects.filter(pk=root.pk), many=True)
         self.assertNotIn("email", rows[0])
         self.assertNotIn("email", provider.get_write_fields())
+
+    def test_hidden_fields_not_matched(self):
+        server, provider = self.provider(hidden_fields=["email", "is_staff"])
+        root = User.objects.create_superuser("hidden-root", email="root@example.com")
+        ctx = CallContext(server=server, user=root)
+        self.assertEqual(provider.run_list(ctx, query="example.com")["count"], 0)
+        self.assertEqual(provider.run_list(ctx, query="hidden-root")["count"], 1)
+        self.assertNotIn("email", provider.search_fields)
+        self.assertNotIn("is_staff", provider.get_filters())
+        self.assertIn("is_active", provider.get_filters())
+
+    def test_unexposed_admin_refused(self):
+        from xprez_mcp.contrib.tokens.admin import TokenAdmin
+        from xprez_mcp.contrib.tokens.models import Token
+
+        local_site = admin.AdminSite(name="tokens")
+        local_site.register(Token, TokenAdmin)
+        attrs = {"admin_site": local_site}
+        with self.assertRaisesMessage(ImproperlyConfigured, "mcp_exposed"):
+            type("P", (AdminProvider,), attrs)(MCPServer(name="t"), model=Token)
 
 
 class AdminVisibilityTests(AdminTestCase):
@@ -488,6 +509,26 @@ class AdminVisibilityTests(AdminTestCase):
         row = provider.serialize(root, queryset, many=True)[0]
         self.assertEqual(row["upper_name"], "ACME")
         self.assertEqual(row["secret"], "secret-acme")
+
+    def test_list_filter_per_user(self):
+        class PerUserAdmin(ClientAdmin):
+            def get_list_filter(self, request):
+                if request.user.is_superuser:
+                    return self.list_filter
+                return ["size"]
+
+        local_site = admin.AdminSite(name="per-user-filter")
+        local_site.register(Client, PerUserAdmin)
+        server = MCPServer(name="per-user-filter")
+        provider = type("P", (AdminProvider,), {"admin_site": local_site})(
+            server, model=Client
+        )
+        viewer = CallContext(server=server, user=self.viewer)
+        self.assertEqual(provider.run_list(viewer, size="l")["count"], 1)
+        with self.assertRaisesMessage(InvalidArguments, "cannot filter by industry"):
+            provider.run_list(viewer, industry=self.tech.pk)
+        root = CallContext(server=server, user=self.root)
+        self.assertEqual(provider.run_list(root, industry=self.tech.pk)["count"], 1)
 
 
 class InlineOfInheritedParentTests(TestCase):

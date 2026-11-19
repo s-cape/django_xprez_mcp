@@ -106,6 +106,8 @@ class TransportTests(MCPTestCase):
     def test_parse_error(self):
         response = self.post("{not json")
         self.assertEqual(response.json()["error"]["code"], -32700)
+        response = self.post("[" * 100_000)
+        self.assertEqual(response.json()["error"]["code"], -32700)
 
     def test_invalid_requests(self):
         for body in ([], [{"jsonrpc": "2.0", "id": 1, "method": "ping"}], {"id": 1}):

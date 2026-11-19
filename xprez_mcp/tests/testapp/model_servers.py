@@ -5,7 +5,7 @@ from xprez_mcp import MCPServer, ModelProvider, tool
 from .models import Client, Industry, Tag
 
 model_mcp = MCPServer(name="models")
-generic_mcp = MCPServer(name="generic", models="generic")
+generic_mcp = MCPServer(name="generic", exposure="generic")
 
 
 def filter_industry(ctx, queryset, value: str):

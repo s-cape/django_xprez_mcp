@@ -113,17 +113,17 @@ class ThirdPartyWriteTests(ModelTestCase):
             server.clear_cache()
             self.addCleanup(server.clear_cache)
 
-    def test_writes_held_back(self):
+    def test_writes_withheld(self):
         names = set(self.tools(token="token-bob"))
         self.assertEqual(
             names,
             {"clients_list", "clients_get", "stats", "industries_list"}
             | {"industries_get", "tags_list"},
         )
-        held = {item.name for item in model_mcp.held_back}
+        held = {item.name for item in model_mcp.withheld_writes}
         self.assertEqual(held, {"clients_create", "clients_update", "clients_delete"})
 
-    def test_generic_writes_held_back(self):
+    def test_generic_writes_withheld(self):
         names = set(self.tools(token="token-bob", url="/generic/mcp/"))
         self.assertNotIn("record_update", self.tools(url="/generic/mcp/"))
         self.assertTrue({"models_list", "records_search", "record_get"} <= names)
@@ -133,9 +133,9 @@ class ThirdPartyWriteTests(ModelTestCase):
         with mock.patch.object(model_mcp, "allow_writes", ["test*"]):
             model_mcp.clear_cache()
             self.assertIn("clients_update", self.tools())
-            self.assertEqual(model_mcp.held_back, [])
+            self.assertEqual(model_mcp.withheld_writes, [])
 
-    def test_inspect_lists_held_back(self):
+    def test_inspect_lists_withheld(self):
         out = StringIO()
         call_command(
             "mcp_inspect",
@@ -143,7 +143,7 @@ class ThirdPartyWriteTests(ModelTestCase):
             stdout=out,
         )
         self.assertIn("clients_delete", out.getvalue())
-        self.assertIn("(held back: ALLOW_WRITES)", out.getvalue())
+        self.assertIn("(withheld: ALLOW_WRITES)", out.getvalue())
 
     def test_project_apps_unaffected(self):
         server = MCPServer(permission="any")
@@ -157,7 +157,7 @@ class ThirdPartyWriteTests(ModelTestCase):
 
 class ExposureTests(SimpleTestCase):
     def test_per_provider(self):
-        server = MCPServer(models="generic")
+        server = MCPServer(exposure="generic")
 
         class Own(ModelProvider):
             fields = ["slug"]

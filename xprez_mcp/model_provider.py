@@ -31,12 +31,13 @@ WRITE_ACTIONS = ("create", "update", "delete")
 EXPOSURES = ("tools", "generic")
 RESERVED_ARGUMENTS = {"query", "limit", "cursor", "ordering"}
 
-_HINTS = {
+HINTS = {
     "list": {"read_only": True},
     "get": {"read_only": True},
     "create": {},
     "update": {"idempotent": True},
     "delete": {"destructive": True},
+    "action": {},
 }
 
 # Lookups whose value is not of the field's own type.
@@ -205,7 +206,7 @@ class ModelProvider(Provider):
     descriptions = {}
     resources = False
     resource_scheme = None
-    exposure = None  # "tools" | "generic"; None follows MCPServer(models=...)
+    exposure = None  # "tools" | "generic"; None follows MCPServer(exposure=...)
     related_labels = None  # None follows MCPServer(related_labels=...)
     page_size = 20
     max_page_size = 100
@@ -226,7 +227,11 @@ class ModelProvider(Provider):
                 f"{type(self).__qualname__} needs a model: register it with "
                 "mcp.register(Model, Provider) or set Provider.model."
             )
+        self.configure()
         self.check()
+
+    def configure(self):
+        """Subclass hook, run once the model is known and before ``check``."""
 
     # --- configuration ------------------------------------------------------
 
@@ -236,6 +241,10 @@ class ModelProvider(Provider):
 
     def check(self):
         label = type(self).__qualname__
+        if not getattr(self.model, "mcp_exposed", True):
+            raise ImproperlyConfigured(
+                f"{label}: {self.opts.label} sets mcp_exposed = False."
+            )
         unknown = set(self.actions) - set(ACTIONS)
         if unknown:
             raise ImproperlyConfigured(f"{label}: unknown actions {sorted(unknown)}.")
@@ -281,7 +290,7 @@ class ModelProvider(Provider):
         return self.server.related_labels
 
     def get_exposure(self):
-        return self.exposure or self.server.models
+        return self.exposure or self.server.exposure
 
     def get_name(self):
         if self.name:
@@ -295,6 +304,13 @@ class ModelProvider(Provider):
     @property
     def lookup_argument(self):
         return "id" if self.lookup_field == "pk" else self.lookup_field
+
+    @property
+    def lookup_name(self):
+        """The field in results whose value is passed as ``id``."""
+        if self.lookup_field == "pk":
+            return self.opts.pk.name
+        return self.lookup_field
 
     @cached_property
     def lookup_annotation(self):
@@ -652,29 +668,35 @@ class ModelProvider(Provider):
 
     # --- actions ------------------------------------------------------------
 
+    def paginate_queryset(self, queryset, limit, cursor, serialize):
+        """``{results, count, next_cursor}`` for one page of ``queryset``."""
+        limit = self.page_size if limit is None else limit
+        if not 1 <= limit <= self.max_page_size:
+            raise InvalidArguments(f"limit must be between 1 and {self.max_page_size}.")
+        offset = _decode_cursor(cursor) if cursor else 0
+        count = queryset.count()
+        page = list(queryset[offset : offset + limit])
+        more = offset + limit < count
+        return {
+            "results": serialize(page),
+            "count": count,
+            "next_cursor": _encode_cursor(offset + limit) if more else None,
+        }
+
     def run_list(
         self, ctx, query=None, limit=None, cursor=None, ordering=None, **filters
     ):
         if query is not None and not self.has_search():
             raise InvalidArguments(f"{self.get_name()} cannot be searched.")
-        limit = self.page_size if limit is None else limit
-        if not 1 <= limit <= self.max_page_size:
-            raise InvalidArguments(f"limit must be between 1 and {self.max_page_size}.")
-        offset = _decode_cursor(cursor) if cursor else 0
         queryset = self.get_queryset(ctx)
         if query:
             queryset = self.search(ctx, queryset, query)
         queryset = self.filter_queryset(ctx, queryset, filters)
         ordering = [ordering] if ordering else self.get_list_ordering(ctx)
         queryset = queryset.order_by(*self.with_pk_tiebreak(ordering))
-        count = queryset.count()
-        page = list(queryset[offset : offset + limit])
-        more = offset + limit < count
-        return {
-            "results": self.serialize(ctx, page, many=True),
-            "count": count,
-            "next_cursor": _encode_cursor(offset + limit) if more else None,
-        }
+        return self.paginate_queryset(
+            queryset, limit, cursor, lambda page: self.serialize(ctx, page, many=True)
+        )
 
     def run_get(self, ctx, **kwargs):
         instance = self.get_object(ctx, kwargs[self.lookup_argument], "get")
@@ -790,7 +812,7 @@ class ModelProvider(Provider):
                 name=self.get_tool_name(action),
                 description=self.get_description(action),
                 permission=self.action_permission(action),
-                **_HINTS[action],
+                **HINTS[action],
             )
             for action in self.actions
         ]
@@ -849,6 +871,8 @@ class ModelProvider(Provider):
         return specs
 
     def complete_lookup(self, ctx, value):
+        if not self.allows(ctx, "list"):
+            return []
         queryset = self.get_queryset(ctx).filter(
             **{f"{self.lookup_field}__istartswith": value}
         )
@@ -871,7 +895,7 @@ class ModelProvider(Provider):
         entry = {
             "model": self.get_name(),
             "name": str(self.opts.verbose_name),
-            "lookup": self.lookup_argument,
+            "lookup": self.lookup_name,
             "actions": actions,
         }
         if self.fields is not None:

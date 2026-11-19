@@ -34,10 +34,8 @@ from . import schema
 from .errors import InvalidArguments, ToolError
 from .items import Item, ToolSpec
 from .model_provider import (
-    WRITE_ACTIONS,
+    HINTS,
     ModelProvider,
-    _decode_cursor,
-    _encode_cursor,
     form_error,
     is_writable,
     make_function,
@@ -45,6 +43,11 @@ from .model_provider import (
 )
 
 INLINE_OPERATIONS = ("create", "update", "delete")
+INLINE_PERMISSIONS = {
+    "create": "has_add_permission",
+    "update": "has_change_permission",
+    "delete": "has_delete_permission",
+}
 _PLAIN = (
     str,
     int,
@@ -104,16 +107,6 @@ class AdminProvider(ModelProvider):
     hidden_fields = ()  # never read nor written, with what the admin's form masks
 
     def __init__(self, server, model=None):
-        model = model or type(self).model
-        if model is None:
-            raise ImproperlyConfigured(
-                f"{type(self).__qualname__} needs a model: register it with "
-                "mcp.register(Model, Provider) or set Provider.model."
-            )
-        self.model = model
-        self.model_admin = self.get_model_admin()
-        self.unsupported = []
-        self.configure()
         super().__init__(server, model=model)
         self.inline_specs  # resolves inlines now, filling unsupported
 
@@ -137,6 +130,8 @@ class AdminProvider(ModelProvider):
 
     def configure(self):
         """Fill what the class leaves unset from the ``ModelAdmin``."""
+        self.model_admin = self.get_model_admin()
+        self.unsupported = []
         label = type(self).__qualname__
         if self.permissions:
             raise ImproperlyConfigured(
@@ -146,17 +141,32 @@ class AdminProvider(ModelProvider):
         if "delete_selected" in self.admin_actions:
             raise ImproperlyConfigured(f"{label}: delete_selected is never exposed.")
         model_admin = self.model_admin
-        # list columns then follow get_list_display(request) per call
+        if not getattr(model_admin, "mcp_exposed", True):
+            raise ImproperlyConfigured(
+                f"{label}: {type(model_admin).__qualname__} sets mcp_exposed = False."
+            )
+        # list columns and filters then follow the admin's get_* per call
         self.fields_from_admin = self.fields is None and self.serializer is None
         if self.fields_from_admin:
             self.fields = self.admin_list_fields(model_admin.list_display)
         if not self.search_fields:
             self.search_fields = tuple(model_admin.search_fields)
-        if not self.filters:
-            self.filters = self.admin_filters()
+        self.filters_from_admin = not self.filters
+        if self.filters_from_admin:
+            self.filters, unsupported = self.admin_filters(model_admin.list_filter)
+            self.unsupported += unsupported
         if self.write_fields is None and self.serializer is None:
             self.write_fields = self.admin_write_fields()
         hidden = self.get_hidden_fields(model_admin)
+        # matching on a hidden field would reveal it through counts
+        self.search_fields = tuple(
+            name for name in self.search_fields if not _touches(name, hidden)
+        )
+        self.filters = {
+            name: spec
+            for name, spec in self.get_filters().items()
+            if callable(spec) or not _touches(spec, hidden)
+        }
         if self.fields is not None:
             self.fields = [name for name in self.fields if name not in hidden]
         if self.write_fields is not None:
@@ -172,13 +182,6 @@ class AdminProvider(ModelProvider):
             if isinstance(field, ReadOnlyPasswordHashField):
                 hidden.add(name)
         return hidden
-
-    @property
-    def lookup_name(self):
-        """The lookup's key in results."""
-        if self.lookup_field == "pk":
-            return self.model._meta.pk.name
-        return self.lookup_field
 
     @cached_property
     def display_callables(self):
@@ -241,9 +244,10 @@ class AdminProvider(ModelProvider):
             if name not in readonly and is_writable(self.opts, name)
         ]
 
-    def admin_filters(self):
-        filters = {}
-        for entry in self.model_admin.list_filter:
+    def admin_filters(self, list_filter):
+        """``(filters, unsupported entries)`` of a ``list_filter``."""
+        filters, unsupported = {}, []
+        for entry in list_filter:
             if isinstance(entry, (list, tuple)):
                 entry = entry[0]  # (field, FieldListFilter): filter by the field
             if isinstance(entry, str):
@@ -252,7 +256,7 @@ class AdminProvider(ModelProvider):
                 except ImproperlyConfigured:
                     field, rest = None, "?"
                 if field is None or rest:
-                    self.unsupported.append(f"list_filter {entry!r}")
+                    unsupported += [f"list_filter {entry!r}"]
                     continue
                 if isinstance(field, models.DateField) and not field.is_relation:
                     filters[f"{entry}__gte"] = f"{entry}__gte"
@@ -262,8 +266,8 @@ class AdminProvider(ModelProvider):
             elif isinstance(entry, type) and issubclass(entry, admin.SimpleListFilter):
                 filters[entry.parameter_name] = self.simple_filter(entry)
             else:
-                self.unsupported.append(f"list_filter {entry!r}")
-        return filters
+                unsupported += [f"list_filter {entry!r}"]
+        return filters, unsupported
 
     def simple_filter(self, filter_class):
         name = filter_class.parameter_name
@@ -345,9 +349,7 @@ class AdminProvider(ModelProvider):
             return bool(self.inline_specs) and self.has_action_permission(ctx, "get")
         if action.startswith("inline_"):
             return bool(self.inline_specs) and self.has_action_permission(ctx, "update")
-        if action not in self.actions:
-            return False
-        if action in WRITE_ACTIONS and not self.writes_allowed():
+        if not super().has_action_permission(ctx, action):
             return False
         return self.admin_permission(self.admin_request(ctx), action)
 
@@ -374,10 +376,27 @@ class AdminProvider(ModelProvider):
 
     def search(self, ctx, queryset, query):
         request = self.admin_request(ctx)
+        hidden = self.get_hidden_fields(self.model_admin)
+        search_fields = self.model_admin.get_search_fields(request)
+        if any(_touches(name, hidden) for name in search_fields):
+            return super().search(ctx, queryset, query)  # without the hidden ones
         queryset, duplicates = self.model_admin.get_search_results(
             request, queryset, query
         )
         return queryset.distinct() if duplicates else queryset
+
+    def filter_queryset(self, ctx, queryset, values):
+        if self.filters_from_admin:
+            entries = self.model_admin.get_list_filter(self.admin_request(ctx))
+            offered, _ = self.admin_filters(entries)
+            refused = sorted(
+                name
+                for name, value in values.items()
+                if value is not None and name not in offered
+            )
+            if refused:
+                raise InvalidArguments(f"You cannot filter by {', '.join(refused)}.")
+        return super().filter_queryset(ctx, queryset, values)
 
     def get_list_ordering(self, ctx):
         ordering = self.model_admin.get_ordering(self.admin_request(ctx))
@@ -553,7 +572,7 @@ class AdminProvider(ModelProvider):
         except (TypeError, KeyError, ValueError):
             return str(description)
 
-    def run_admin_action(self, ctx, action, ids):
+    def run_action(self, ctx, action, ids):
         available = self.available_admin_actions(ctx)
         if action not in available:
             raise InvalidArguments(
@@ -596,17 +615,22 @@ class AdminProvider(ModelProvider):
             found[name] = (inline_class, fk)
         return found
 
+    def get_inline_spec(self, name):
+        """``(InlineModelAdmin class, foreign key)`` for ``name``."""
+        try:
+            return self.inline_specs[name]
+        except KeyError:
+            raise InvalidArguments(
+                f"Unknown inline {name!r}. Available: {sorted(self.inline_specs)}."
+            ) from None
+
     def static_inline(self, name):
-        inline_class, _ = self.inline_specs[name]
+        inline_class, _ = self.get_inline_spec(name)
         return inline_class(self.model, self.site)
 
     def get_inline(self, request, parent, name):
         """``(FormSet, inline, prefix, fk)`` as the change form builds them."""
-        if name not in self.inline_specs:
-            raise InvalidArguments(
-                f"Unknown inline {name!r}. Available: {sorted(self.inline_specs)}."
-            )
-        inline_class, fk = self.inline_specs[name]
+        inline_class, fk = self.get_inline_spec(name)
         prefixes = {}
         for formset_class, inline in self.model_admin.get_formsets_with_inlines(
             request, parent
@@ -650,31 +674,37 @@ class AdminProvider(ModelProvider):
             }
         return result
 
+    def run(self, ctx, action, /, **kwargs):
+        if action in ("inline_create", "inline_update", "inline_delete"):
+            operation = action.removeprefix("inline_")
+            return self.run_inline(
+                ctx,
+                operation,
+                kwargs.pop("inline"),
+                kwargs.pop("parent"),
+                kwargs.pop("row", None),
+                **kwargs,
+            )
+        else:
+            return super().run(ctx, action, **kwargs)
+
     def run_inline_list(self, ctx, inline, parent, limit=None, cursor=None):
         parent_obj = self.get_object(ctx, parent, "get")
         request = self.admin_request(ctx)
         _, inline_admin, _, fk = self.get_inline(request, parent_obj, inline)
-        limit = self.page_size if limit is None else limit
-        if not 1 <= limit <= self.max_page_size:
-            raise InvalidArguments(f"limit must be between 1 and {self.max_page_size}.")
-        offset = _decode_cursor(cursor) if cursor else 0
         rows = self.inline_rows(request, inline_admin, parent_obj, fk)
-        count = rows.count()
-        page = list(rows[offset : offset + limit])
-        more = offset + limit < count
-        return self.with_messages(
-            ctx,
-            {
-                "results": [
-                    self.inline_row(request, inline_admin, parent_obj, row, fk)
-                    for row in page
-                ],
-                "count": count,
-                "next_cursor": _encode_cursor(offset + limit) if more else None,
-            },
+        result = self.paginate_queryset(
+            rows,
+            limit,
+            cursor,
+            lambda page: [
+                self.inline_row(request, inline_admin, parent_obj, row, fk)
+                for row in page
+            ],
         )
+        return self.with_messages(ctx, result)
 
-    def run_inline(self, ctx, operation, inline, parent, child=None, **data):
+    def run_inline(self, ctx, operation, inline, parent, row=None, **data):
         """Create, change or delete one inline row through the whole formset."""
         parent_obj = self.get_object(ctx, parent, "update")
         request = self.admin_request(ctx, write=True)
@@ -682,12 +712,8 @@ class AdminProvider(ModelProvider):
         formset_class, inline_admin, prefix, fk = self.get_inline(
             request, parent_obj, inline
         )
-        permission = {
-            "create": inline_admin.has_add_permission,
-            "update": inline_admin.has_change_permission,
-            "delete": inline_admin.has_delete_permission,
-        }[operation]
-        if not permission(request, parent_obj):
+        allowed = getattr(inline_admin, INLINE_PERMISSIONS[operation])
+        if not allowed(request, parent_obj):
             raise PermissionDenied(f"You cannot {operation} {inline} here.")
         if data:
             fields = set(flatten(inline_admin.get_fields(request, parent_obj)))
@@ -710,7 +736,7 @@ class AdminProvider(ModelProvider):
         for index, form in enumerate(initial):
             for name in form.fields:
                 put(f"{prefix}-{index}-{name}", form[name].value())
-            if child is not None and str(form.instance.pk) == str(child):
+            if row is not None and str(form.instance.pk) == str(row):
                 target = index
         total = len(initial)
         if operation == "create":
@@ -719,7 +745,7 @@ class AdminProvider(ModelProvider):
             for name in empty.fields:
                 put(f"{prefix}-{target}-{name}", empty[name].value())
         elif target is None:
-            raise Http404(f"No {inline} row {child!r} here.")
+            raise Http404(f"No {inline} row {row!r} here.")
         if operation == "delete":
             put(f"{prefix}-{target}-DELETE", True)
         for name, value in data.items():
@@ -751,7 +777,7 @@ class AdminProvider(ModelProvider):
             )
             model_admin.log_change(request, parent_obj, message)
         if operation == "delete":
-            result = {"deleted": True, "id": child}
+            result = {"deleted": True, "row": row}
         else:
             if operation == "create":
                 row = formset.new_objects[0]
@@ -781,7 +807,7 @@ class AdminProvider(ModelProvider):
     # --- generated items ----------------------------------------------------
 
     def inline_write_parameters(self, name, partial):
-        inline_class, fk = self.inline_specs[name]
+        inline_class, fk = self.get_inline_spec(name)
         inline = self.static_inline(name)
         opts = inline_class.model._meta
         fields, readonly = self.static_fields(inline)
@@ -793,12 +819,12 @@ class AdminProvider(ModelProvider):
         ]
 
     def inline_parameters(self, name, operation, with_lookups=True):
-        inline_class, _ = self.inline_specs[name]
+        inline_class, _ = self.get_inline_spec(name)
         parent = ("parent", self.lookup_annotation, inspect.Parameter.empty)
-        child_annotation = Annotated[
+        row_annotation = Annotated[
             int | str, f"The {inline_class.model._meta.verbose_name}'s id"
         ]
-        child = ("id", child_annotation, inspect.Parameter.empty)
+        row = ("row", row_annotation, inspect.Parameter.empty)
         if operation == "list":
             limit = f"Results per page, 1-{self.max_page_size}"
             cursor = "next_cursor from the previous page"
@@ -811,18 +837,23 @@ class AdminProvider(ModelProvider):
             params = self.inline_write_parameters(name, partial=False)
             return [parent, *params] if with_lookups else params
         if operation == "delete":
-            return [parent, child] if with_lookups else []
+            return [parent, row] if with_lookups else []
         params = self.inline_write_parameters(name, partial=True)
-        return [parent, child, *params] if with_lookups else params
+        return [parent, row, *params] if with_lookups else params
 
-    def inline_argument_function(self, name, operation):
-        """The fields of an inline write, for generic mode's ``data``."""
-        return make_function(
-            f"{type(self).__qualname__}.{name}_{operation}",
-            type(self).__module__,
-            self.inline_parameters(name, operation, with_lookups=False),
-            lambda provider, ctx, **kwargs: None,
-        )
+    def argument_function(self, action, inline=None):
+        """The fields of an action, for generic mode. ``inline`` selects an
+        inline write's fields."""
+        if inline is None:
+            return super().argument_function(action)
+        else:
+            operation = action.removeprefix("inline_")
+            return make_function(
+                f"{type(self).__qualname__}.{inline}_{operation}",
+                type(self).__module__,
+                self.inline_parameters(inline, operation, with_lookups=False),
+                lambda provider, ctx, **kwargs: None,
+            )
 
     def get_inline_specs(self):
         specs = []
@@ -842,9 +873,9 @@ class AdminProvider(ModelProvider):
                         return provider.run_inline_list(
                             ctx, _name, parent_value, **kwargs
                         )
-                    child = kwargs.pop("id", None)
+                    row = kwargs.pop("row", None)
                     return provider.run_inline(
-                        ctx, _operation, _name, parent_value, child, **kwargs
+                        ctx, _operation, _name, parent_value, row, **kwargs
                     )
 
                 func = make_function(
@@ -862,12 +893,6 @@ class AdminProvider(ModelProvider):
                     "delete": f"Remove a {singular} from a {parent}.",
                 }[operation]
                 key = f"inline_{operation}"
-                hints = {
-                    "list": {"read_only": True},
-                    "create": {},
-                    "update": {"idempotent": True},
-                    "delete": {"destructive": True},
-                }[operation]
                 tool_key = f"{name}_{operation}"
                 specs.append(
                     ToolSpec(
@@ -875,7 +900,7 @@ class AdminProvider(ModelProvider):
                         name=self.tool_names.get(tool_key) or f"{base}_{tool_key}",
                         description=self.descriptions.get(tool_key, description),
                         permission=self.inline_permission(name, key),
-                        **hints,
+                        **HINTS[operation],
                     )
                 )
         return specs
@@ -888,12 +913,8 @@ class AdminProvider(ModelProvider):
                 return True
             inline = self.static_inline(name)
             request = self.admin_request(ctx)
-            operation = key[len("inline_") :]
-            return {
-                "create": inline.has_add_permission,
-                "update": inline.has_change_permission,
-                "delete": inline.has_delete_permission,
-            }[operation](request, None)
+            operation = key.removeprefix("inline_")
+            return getattr(inline, INLINE_PERMISSIONS[operation])(request, None)
 
         return check
 
@@ -913,9 +934,7 @@ class AdminProvider(ModelProvider):
                     inspect.Parameter.empty,
                 ),
             ],
-            lambda provider, ctx, action, ids: provider.run_admin_action(
-                ctx, action, ids
-            ),
+            lambda provider, ctx, action, ids: provider.run_action(ctx, action, ids),
         )
         description = (
             f"Run an admin action on {self.opts.verbose_name_plural}. "
@@ -941,8 +960,6 @@ class AdminProvider(ModelProvider):
         entry = super().describe(ctx)
         if self.fields_from_admin:
             entry["fields"] = self.list_display(ctx)[0]
-        # the key that holds the lookup in results (user_ptr on a multi-table child)
-        entry["lookup"] = self.lookup_name
         if self.has_action_permission(ctx, "action"):
             entry["admin_actions"] = {
                 name: self.action_description(name)
@@ -967,6 +984,11 @@ class AdminProvider(ModelProvider):
                 inlines[name] = inline
             entry["inlines"] = inlines
         return entry
+
+
+def _touches(path, names):
+    """Whether a search or filter path goes through one of ``names``."""
+    return any(part in names for part in path.lstrip("^=@").split("__"))
 
 
 def _display_callables(list_display):
@@ -1022,7 +1044,7 @@ def build_admin_providers(server, configs):
                     attrs[option] = config[option]
             provider_class = type(f"{model.__name__}AdminProvider", (base,), attrs)
             provider = provider_class(server, model=model)
-            server.mark_own(provider)
+            server.trust_writes(provider)
             providers.append(provider)
             seen.add(model)
     return providers

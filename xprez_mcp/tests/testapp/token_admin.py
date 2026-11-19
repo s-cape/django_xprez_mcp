@@ -13,5 +13,5 @@ site = admin.AdminSite(name="tokenadmin")
 site.register(User, UserAdmin)
 site.register(Token, TokenAdmin)
 
-token_admin_mcp = MCPServer(name="token-admin", permission="staff", models="generic")
+token_admin_mcp = MCPServer(name="token-admin", permission="staff", exposure="generic")
 token_admin_mcp.register_admin(site)
