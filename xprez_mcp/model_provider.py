@@ -187,6 +187,7 @@ class ModelProvider(Provider):
 
     model = None
     name = None  # tool prefix, generic model name, resource path
+    name_template = "{plural}"  # without name; also {app_label}, {model_name}
     fields = None
     detail_fields = None
     write_fields = None
@@ -285,7 +286,11 @@ class ModelProvider(Provider):
     def get_name(self):
         if self.name:
             return self.name
-        return slugify(str(self.opts.verbose_name_plural)).replace("-", "_")
+        return self.name_template.format(
+            app_label=self.opts.app_label,
+            model_name=self.opts.model_name,
+            plural=slugify(str(self.opts.verbose_name_plural)).replace("-", "_"),
+        )
 
     @property
     def lookup_argument(self):

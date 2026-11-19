@@ -15,6 +15,7 @@ from typing import Annotated, Literal
 import django
 from django.contrib import admin
 from django.contrib.admin.utils import flatten, flatten_fieldsets, lookup_field
+from django.contrib.auth.forms import ReadOnlyPasswordHashField
 from django.contrib.auth.models import AnonymousUser
 from django.contrib.messages.storage.base import BaseStorage
 from django.core.exceptions import (
@@ -100,6 +101,7 @@ class AdminProvider(ModelProvider):
     admin_actions = ()
     inlines = None  # InlineModelAdmin classes; None: all of the ModelAdmin's
     inline_names = {}
+    hidden_fields = ()  # never read nor written, with what the admin's form masks
 
     def __init__(self, server, model=None):
         model = model or type(self).model
@@ -152,6 +154,21 @@ class AdminProvider(ModelProvider):
             self.filters = self.admin_filters()
         if self.write_fields is None and self.serializer is None:
             self.write_fields = self.admin_write_fields()
+        hidden = self.get_hidden_fields(model_admin)
+        if self.fields is not None:
+            self.fields = [name for name in self.fields if name not in hidden]
+        if self.write_fields is not None:
+            self.write_fields = [
+                name for name in self.write_fields if name not in hidden
+            ]
+
+    def get_hidden_fields(self, model_admin):
+        """``hidden_fields`` and the fields the admin's form shows masked."""
+        hidden = set(self.hidden_fields) if model_admin is self.model_admin else set()
+        for name, field in model_admin.form.base_fields.items():
+            if isinstance(field, ReadOnlyPasswordHashField):
+                hidden.add(name)
+        return hidden
 
     @property
     def lookup_name(self):
@@ -391,6 +408,7 @@ class AdminProvider(ModelProvider):
             names = [self.lookup_name]
         else:  # an inline: obj is the parent, the rows are the inline's model
             names = [model_admin.model._meta.pk.name]
+        exclude = {*exclude, *self.get_hidden_fields(model_admin)}
         for name in flatten(model_admin.get_fields(request, obj)):
             if name not in names and name not in exclude:
                 names.append(name)
@@ -421,6 +439,7 @@ class AdminProvider(ModelProvider):
         model_admin = self.model_admin
         allowed = set(flatten_fieldsets(model_admin.get_fieldsets(request, instance)))
         allowed -= set(model_admin.get_readonly_fields(request, instance))
+        allowed -= self.get_hidden_fields(model_admin)
         refused = sorted(name for name in data if name not in allowed)
         if refused:
             raise ToolError(f"You cannot set {', '.join(refused)}.")
@@ -656,6 +675,7 @@ class AdminProvider(ModelProvider):
         if data:
             fields = set(flatten(inline_admin.get_fields(request, parent_obj)))
             fields -= set(inline_admin.get_readonly_fields(request, parent_obj))
+            fields -= self.get_hidden_fields(inline_admin)
             fields.discard(fk.name)
             refused = sorted(name for name in data if name not in fields)
             if refused:
@@ -748,10 +768,11 @@ class AdminProvider(ModelProvider):
         inline = self.static_inline(name)
         opts = inline_class.model._meta
         fields, readonly = self.static_fields(inline)
+        skipped = {*readonly, *self.get_hidden_fields(inline), fk.name}
         return [
             write_parameter(opts, field, partial)
             for field in fields
-            if field not in readonly and field != fk.name and is_writable(opts, field)
+            if field not in skipped and is_writable(opts, field)
         ]
 
     def inline_parameters(self, name, operation, with_lookups=True):
@@ -912,9 +933,13 @@ class AdminProvider(ModelProvider):
             writes = self.has_action_permission(ctx, "inline_update")
             inlines = {}
             for name in self.inline_specs:
-                fields, _ = self.static_fields(self.static_inline(name))
-                fk = self.inline_specs[name][1]
-                inline = {"fields": [field for field in fields if field != fk.name]}
+                inline_admin = self.static_inline(name)
+                fields, _ = self.static_fields(inline_admin)
+                skipped = {
+                    *self.get_hidden_fields(inline_admin),
+                    self.inline_specs[name][1].name,
+                }
+                inline = {"fields": [field for field in fields if field not in skipped]}
                 if writes:
                     inline["writable"] = {
                         param[0]: schema.annotation_schema(param[1])
@@ -969,8 +994,9 @@ def build_admin_providers(server, configs):
                 "__module__": type(model_admin).__module__,
                 "__qualname__": f"{model.__name__}AdminProvider",
             }
-            if config["exposure"] is not None:
-                attrs["exposure"] = config["exposure"]
+            for option in ("exposure", "name_template"):
+                if config[option] is not None:
+                    attrs[option] = config[option]
             provider_class = type(f"{model.__name__}AdminProvider", (base,), attrs)
             provider = provider_class(server, model=model)
             server.mark_own(provider)

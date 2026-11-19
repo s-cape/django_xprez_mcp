@@ -1,5 +1,6 @@
 from django.contrib import admin
 from django.contrib.admin.models import ADDITION, CHANGE, DELETION, LogEntry
+from django.contrib.auth.admin import UserAdmin
 from django.contrib.auth.models import Permission, User
 from django.core.exceptions import ImproperlyConfigured
 from django.test import SimpleTestCase, TestCase
@@ -384,6 +385,14 @@ class AdminConfigurationTests(SimpleTestCase):
         models = {provider.model for provider in server.get_providers()}
         self.assertEqual(models, {Industry})
 
+    def test_register_admin_name_template(self):
+        server = MCPServer(models="generic")
+        server.register_admin(site, name_template="{app_label}_{plural}")
+        names = {provider.get_name() for provider in server.get_providers()}
+        self.assertEqual(
+            names, {"testapp_clients", "testapp_industries", "testapp_tags"}
+        )
+
     def test_explicit_registration_wins(self):
         server = MCPServer()
         server.register_admin(site)
@@ -392,6 +401,38 @@ class AdminConfigurationTests(SimpleTestCase):
         models = [provider.model for provider in server.get_providers()]
         self.assertEqual(models.count(Industry), 1)
         self.assertIn(Client, models)
+
+
+class HiddenFieldsTests(TestCase):
+    def provider(self, **attrs):
+        local_site = admin.AdminSite(name="users")
+        local_site.register(User, UserAdmin)
+        attrs = {
+            "admin_site": local_site,
+            "actions": ["list", "get", "update"],
+            **attrs,
+        }
+        server = MCPServer(name="users")
+        return server, type("P", (AdminProvider,), attrs)(server, model=User)
+
+    def test_masked_password_left_out(self):
+        server, provider = self.provider()
+        root = User.objects.create_superuser("hidden-root", password="secret")
+        data = provider.serialize(
+            CallContext(server=server, user=root), root, detail=True
+        )
+        self.assertEqual(data["username"], "hidden-root")
+        self.assertNotIn("password", data)
+        self.assertNotIn("password", provider.get_write_fields())
+
+    def test_hidden_fields(self):
+        server, provider = self.provider(hidden_fields=["email"])
+        root = User.objects.create_superuser("hidden-root", email="root@example.com")
+        ctx = CallContext(server=server, user=root)
+        self.assertNotIn("email", provider.serialize(ctx, root, detail=True))
+        rows = provider.serialize(ctx, User.objects.filter(pk=root.pk), many=True)
+        self.assertNotIn("email", rows[0])
+        self.assertNotIn("email", provider.get_write_fields())
 
 
 class InlineOfInheritedParentTests(TestCase):

@@ -201,6 +201,7 @@ class MCPServer:
         model_actions=None,
         exposure=None,
         provider_class=None,
+        name_template=None,
     ):
         """Expose every model of an ``AdminSite`` through an ``AdminProvider``.
 
@@ -216,6 +217,7 @@ class MCPServer:
                 "model_actions": dict(model_actions or {}),
                 "exposure": exposure,
                 "provider_class": provider_class,
+                "name_template": name_template,
             }
         )
         self.clear_cache()

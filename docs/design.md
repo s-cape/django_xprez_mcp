@@ -166,6 +166,9 @@ class ClientProvider(ModelProvider):
 - Only `list` and `get` are on by default.
 - `name` (default: the slugified `verbose_name_plural`, `clients`) names the
   model in tool names (`clients_list`), in generic mode and in resource URIs.
+  Without `name`, `name_template` builds it from `{plural}` (the default),
+  `{app_label}` and `{model_name}`; `"{app_label}_{plural}"` keeps apps with
+  the same plural names apart.
   `tool_names` overrides single actions, `descriptions` their descriptions.
 - `lookup_field` defaults to `"pk"`, whose argument is called `id`.
 - Reading needs `fields` or `serializer`, not both; with neither the provider
@@ -269,6 +272,7 @@ mcp.register_admin(
     actions=["list", "get"],     # default; writes are opt-in, per model too:
     model_actions={Client: ["list", "get", "update"]},
     exposure="generic",          # the phase 2 generic tools
+    name_template="{app_label}_{plural}",  # default "{plural}"
 )
 ```
 
@@ -299,6 +303,9 @@ therefore never adds a write tool on its own.
   `get_fields(request, obj)` (readonly fields included) unless
   `detail_fields` / `detail_serializer` are set. Values that are not JSON
   (model instances, HTML) are sent as strings.
+- Hidden fields are never read or written: `hidden_fields` and the fields the
+  admin's form only shows masked (`ReadOnlyPasswordHashField`, so a user
+  admin never sends password hashes), on the model and its inlines.
 - Search: `get_search_results(request, queryset, query)`, with `distinct()`
   when it may return duplicates. `query` exists when the admin has
   `search_fields`.
@@ -343,8 +350,9 @@ admin code that needs one fails without session middleware.
 the site's registry, when the catalog is built (so it does not depend on the
 order of autodiscovery). Models registered on the server explicitly win;
 `exclude` removes models or apps; `provider_class` sets the base class;
-`exposure` sets the providers' `exposure`. The generated classes take the
-`ModelAdmin`'s module, so `EXCLUDE_APPS` applies by the admin's app.
+`exposure` and `name_template` set the providers' attributes. The generated
+classes take the `ModelAdmin`'s module, so `EXCLUDE_APPS` applies by the
+admin's app.
 `mcp_exposed = False` on a `ModelAdmin`, an inline or a model keeps it out of
 `register_admin` and of the parent's inline tools, wherever it is
 registered (credentials, for example).

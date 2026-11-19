@@ -225,7 +225,8 @@ def build_items(server, providers):
         if name in by_name:
             raise ImproperlyConfigured(
                 f"Two model providers on {server!r} are named {name!r}; set "
-                "ModelProvider.name on one of them."
+                "ModelProvider.name on one of them, or name_template (for "
+                'example register_admin(name_template="{app_label}_{plural}")).'
             )
         by_name[name] = provider
     items = []
