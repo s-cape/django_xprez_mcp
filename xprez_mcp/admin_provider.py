@@ -374,7 +374,8 @@ class AdminProvider(ModelProvider):
                 return instance.pk
             _, _, value = lookup_field(name, instance, model_admin)
             return plain(value)
-        return super().field_value(instance, name)
+        # field types with their own value classes (timezones, money, ...)
+        return plain(super().field_value(instance, name))
 
     def detail_names(self, model_admin, request, obj, exclude=()):
         if model_admin is self.model_admin:

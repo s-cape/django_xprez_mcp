@@ -13,10 +13,25 @@ class Tag(models.Model):
     name = models.CharField(max_length=50)
 
 
+class Hue:
+    def __init__(self, value):
+        self.value = value
+
+    def __str__(self):
+        return self.value
+
+
+class HueField(models.CharField):
+    """Loads a value class JSON cannot encode, like timezone or money fields."""
+
+    def from_db_value(self, value, expression, connection):
+        return None if value is None else Hue(value)
+
+
 class ColoredTag(Tag):
     """Multi-table inheritance: an auto-created, concrete ``tag_ptr``."""
 
-    color = models.CharField(max_length=20)
+    color = HueField(max_length=20)
 
 
 class Swatch(models.Model):

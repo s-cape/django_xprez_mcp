@@ -415,8 +415,9 @@ class InlineOfInheritedParentTests(TestCase):
         swatch = Swatch.objects.create(tag=tag, hex="#f00")
         root = User.objects.create_superuser("inherited-root")
         ctx = CallContext(server=server, user=root)
-        data = provider.serialize(ctx, tag, detail=True)
+        data = provider.serialize(ctx, ColoredTag.objects.get(pk=tag.pk), detail=True)
         self.assertEqual(data["tag_ptr"], tag.pk)
+        self.assertEqual(data["color"], "#f00")  # a Hue, sent as its string
         self.assertEqual(
             data["inlines"]["swatches"],
             {"results": [{"id": swatch.pk, "hex": "#f00"}], "count": 1},
