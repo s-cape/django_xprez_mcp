@@ -14,6 +14,7 @@ from django.core.exceptions import (
     PermissionDenied,
 )
 from django.db import models, transaction
+from django.db.models import prefetch_related_objects
 from django.db.models import Q
 from django.forms import ModelForm, modelform_factory
 from django.http import Http404
@@ -204,6 +205,7 @@ class ModelProvider(Provider):
     resources = False
     resource_scheme = None
     exposure = None  # "tools" | "generic"; None follows MCPServer(models=...)
+    related_labels = None  # None follows MCPServer(related_labels=...)
     page_size = 20
     max_page_size = 100
 
@@ -271,6 +273,11 @@ class ModelProvider(Provider):
             raise ImproperlyConfigured(
                 f"{type(self).__qualname__}: {self.opts.label} has no field {name!r}."
             ) from None
+
+    def get_related_labels(self):
+        if self.related_labels is not None:
+            return self.related_labels
+        return self.server.related_labels
 
     def get_exposure(self):
         return self.exposure or self.server.models
@@ -487,8 +494,32 @@ class ModelProvider(Provider):
             context = self.get_serializer_context(ctx)
             return serializer(value, many=many, context=context).data
         if many:
+            value = list(value)
+            self.prefetch_labels(value, fields)
             return [self.to_dict(instance, fields) for instance in value]
         return self.to_dict(value, fields)
+
+    def prefetch_labels(self, instances, names):
+        """Load the labelled related records of a page in one query each."""
+        if not instances or not self.get_related_labels():
+            return
+        lookups = []
+        opts = instances[0]._meta
+        for name in names:
+            try:
+                field = opts.get_field(name)
+            except FieldDoesNotExist:
+                continue
+            if field.is_relation and (field.concrete or field.auto_created):
+                if field.auto_created and not field.concrete:
+                    name = field.get_accessor_name()
+                lookups.append(name)
+        if lookups:
+            prefetch_related_objects(instances, *lookups)
+
+    @staticmethod
+    def label(related):
+        return None if related is None else {"id": related.pk, "display": str(related)}
 
     def to_dict(self, instance, fields):
         return {name: self.field_value(instance, name) for name in fields}
@@ -500,16 +531,22 @@ class ModelProvider(Provider):
         except FieldDoesNotExist:
             value = getattr(instance, name)
             return value() if callable(value) else value
+        labels = field.is_relation and self.get_related_labels()
         if field.many_to_many or field.one_to_many:
             accessor = field.get_accessor_name() if field.auto_created else name
-            return [related.pk for related in getattr(instance, accessor).all()]
+            rows = getattr(instance, accessor).all()
+            if labels:
+                return [self.label(related) for related in rows]
+            return [related.pk for related in rows]
         if field.is_relation:
             if field.auto_created and not field.concrete:  # reverse one-to-one
                 related = getattr(instance, field.get_accessor_name(), None)
-                return getattr(related, "pk", None)
+                return self.label(related) if labels else getattr(related, "pk", None)
             if not field.concrete:  # GenericForeignKey: no column, any model
                 related = getattr(instance, name, None)
                 return None if related is None else str(related)
+            if labels:
+                return self.label(getattr(instance, name))
             return getattr(instance, field.attname)
         if isinstance(field, models.FileField):
             file = getattr(instance, name)

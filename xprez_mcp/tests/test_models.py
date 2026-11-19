@@ -3,7 +3,7 @@ import unittest
 
 from django.contrib.auth.models import Permission, User
 from django.core.exceptions import ImproperlyConfigured
-from django.test import SimpleTestCase, TestCase
+from django.test import SimpleTestCase, TestCase, override_settings
 
 from xprez_mcp import MCPServer, ModelProvider
 from xprez_mcp.context import CallContext
@@ -383,6 +383,64 @@ class OneToOneValueTests(TestCase):
         note = Note.objects.create(text="hi", target=tag)
         self.assertEqual(provider.field_value(note, "target"), str(tag))
         self.assertIsNone(provider.field_value(Note(text="loose"), "target"))
+
+
+class RelatedLabelsTests(TestCase):
+    @classmethod
+    def setUpTestData(cls):
+        cls.tech = Industry.objects.create(name="Tech")
+        cls.vip = Tag.objects.create(name="vip")
+        cls.acme = Client.objects.create(slug="acme", name="Acme", industry=cls.tech)
+        cls.acme.tags.add(cls.vip)
+        cls.bare = Client.objects.create(slug="bare", name="Bare")
+
+    def provider(self, server=None, **attributes):
+        attributes.setdefault("fields", ["name", "industry", "tags"])
+        cls = type("P", (ModelProvider,), attributes)
+        return cls(server or MCPServer(name="labels"), model=Client)
+
+    def test_off_by_default(self):
+        provider = self.provider()
+        self.assertEqual(provider.field_value(self.acme, "industry"), self.tech.pk)
+        self.assertEqual(provider.field_value(self.acme, "tags"), [self.vip.pk])
+
+    def test_provider_option(self):
+        provider = self.provider(related_labels=True)
+        tech = {"id": self.tech.pk, "display": str(self.tech)}
+        vip = {"id": self.vip.pk, "display": str(self.vip)}
+        self.assertEqual(provider.field_value(self.acme, "industry"), tech)
+        self.assertEqual(provider.field_value(self.acme, "tags"), [vip])
+        self.assertIsNone(provider.field_value(self.bare, "industry"))
+        self.assertEqual(provider.field_value(self.bare, "tags"), [])
+
+    def test_reverse_one_to_one(self):
+        colored = ColoredTag.objects.create(name="red", color="#f00")
+        cls = type("P", (ModelProvider,), {"fields": ["coloredtag"]})
+        provider = cls(MCPServer(name="labels", related_labels=True), model=Tag)
+        tag = Tag.objects.get(pk=colored.pk)
+        self.assertEqual(
+            provider.field_value(tag, "coloredtag"),
+            {"id": colored.pk, "display": str(colored)},
+        )
+
+    def test_server_and_setting(self):
+        server = MCPServer(name="labels", related_labels=True)
+        self.assertTrue(self.provider(server).get_related_labels())
+        self.assertFalse(
+            self.provider(server, related_labels=False).get_related_labels()
+        )
+        with override_settings(XPREZ_MCP={"RELATED_LABELS": True}):
+            self.assertTrue(self.provider().get_related_labels())
+            server = MCPServer(name="labels", related_labels=False)
+            self.assertFalse(self.provider(server).get_related_labels())
+
+    def test_list_prefetches(self):
+        provider = self.provider(related_labels=True)
+        queryset = Client.objects.order_by("name")
+        with self.assertNumQueries(3):  # clients, industries, tags
+            rows = provider.serialize(None, queryset, many=True)
+        self.assertEqual(rows[0]["industry"]["display"], str(self.tech))
+        self.assertIsNone(rows[1]["industry"])
 
 
 class ConfigurationTests(SimpleTestCase):

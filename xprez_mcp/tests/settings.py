@@ -8,6 +8,7 @@ INSTALLED_APPS = [
     "django.contrib.sessions",
     "django.contrib.messages",
     "xprez_mcp",
+    "xprez_mcp.contrib.tokens",
     "xprez_mcp.tests.testapp",
 ]
 ROOT_URLCONF = "xprez_mcp.tests.urls"

@@ -314,9 +314,9 @@ class AdminProvider(ModelProvider):
     def has_action_permission(self, ctx, action):
         if action == "action":
             return self.writes_allowed() and bool(self.available_admin_actions(ctx))
-        if action == "children_list":
+        if action == "inline_list":
             return bool(self.inline_specs) and self.has_action_permission(ctx, "get")
-        if action.startswith("child_"):
+        if action.startswith("inline_"):
             return bool(self.inline_specs) and self.has_action_permission(ctx, "update")
         if action not in self.actions:
             return False
@@ -332,9 +332,9 @@ class AdminProvider(ModelProvider):
         if self.admin_actions:
             found.add("action")
         if self.inline_specs and "get" in self.actions:
-            found.add("children_list")
+            found.add("inline_list")
         if self.inline_specs and "update" in self.actions:
-            found.update(f"child_{operation}" for operation in INLINE_OPERATIONS)
+            found.update(f"inline_{operation}" for operation in INLINE_OPERATIONS)
         return found
 
     # --- reads --------------------------------------------------------------
@@ -545,6 +545,8 @@ class AdminProvider(ModelProvider):
         classes = self.model_admin.inlines if self.inlines is None else self.inlines
         found = {}
         for inline_class in classes:
+            if not _exposed(inline_class, inline_class.model):
+                continue
             try:
                 fk = _get_foreign_key(
                     self.model, inline_class.model, fk_name=inline_class.fk_name
@@ -601,6 +603,9 @@ class AdminProvider(ModelProvider):
                 continue
             rows = self.inline_rows(request, inline, parent, fk)
             page = list(rows[: self.max_page_size])
+            self.prefetch_labels(
+                page, self.detail_names(inline, request, parent, exclude=(fk.name,))
+            )
             result[name] = {
                 "results": [
                     self.inline_row(request, inline, parent, row, fk) for row in page
@@ -609,7 +614,7 @@ class AdminProvider(ModelProvider):
             }
         return result
 
-    def run_children_list(self, ctx, inline, parent, limit=None, cursor=None):
+    def run_inline_list(self, ctx, inline, parent, limit=None, cursor=None):
         parent_obj = self.get_object(ctx, parent, "get")
         request = self.admin_request(ctx)
         _, inline_admin, _, fk = self.get_inline(request, parent_obj, inline)
@@ -633,7 +638,7 @@ class AdminProvider(ModelProvider):
             },
         )
 
-    def run_child(self, ctx, operation, inline, parent, child=None, **data):
+    def run_inline(self, ctx, operation, inline, parent, child=None, **data):
         """Create, change or delete one inline row through the whole formset."""
         parent_obj = self.get_object(ctx, parent, "update")
         request = self.admin_request(ctx, write=True)
@@ -796,11 +801,11 @@ class AdminProvider(ModelProvider):
                 def impl(provider, ctx, _name=name, _operation=operation, **kwargs):
                     parent_value = kwargs.pop("parent")
                     if _operation == "list":
-                        return provider.run_children_list(
+                        return provider.run_inline_list(
                             ctx, _name, parent_value, **kwargs
                         )
                     child = kwargs.pop("id", None)
-                    return provider.run_child(
+                    return provider.run_inline(
                         ctx, _operation, _name, parent_value, child, **kwargs
                     )
 
@@ -818,7 +823,7 @@ class AdminProvider(ModelProvider):
                     "given change.",
                     "delete": f"Remove a {singular} from a {parent}.",
                 }[operation]
-                key = "children_list" if operation == "list" else f"child_{operation}"
+                key = f"inline_{operation}"
                 hints = {
                     "list": {"read_only": True},
                     "create": {},
@@ -841,11 +846,11 @@ class AdminProvider(ModelProvider):
         def check(ctx):
             if not self.has_action_permission(ctx, key):
                 return False
-            if key == "children_list":
+            if key == "inline_list":
                 return True
             inline = self.static_inline(name)
             request = self.admin_request(ctx)
-            operation = key[len("child_") :]
+            operation = key[len("inline_") :]
             return {
                 "create": inline.has_add_permission,
                 "update": inline.has_change_permission,
@@ -903,8 +908,8 @@ class AdminProvider(ModelProvider):
                 name: self.action_description(name)
                 for name in self.available_admin_actions(ctx)
             }
-        if self.has_action_permission(ctx, "children_list"):
-            writes = self.has_action_permission(ctx, "child_update")
+        if self.has_action_permission(ctx, "inline_list"):
+            writes = self.has_action_permission(ctx, "inline_update")
             inlines = {}
             for name in self.inline_specs:
                 fields, _ = self.static_fields(self.static_inline(name))
@@ -918,6 +923,13 @@ class AdminProvider(ModelProvider):
                 inlines[name] = inline
             entry["inlines"] = inlines
         return entry
+
+
+def _exposed(model_admin, model):
+    """``mcp_exposed = False`` on an admin, an inline or a model keeps it out."""
+    return getattr(model_admin, "mcp_exposed", True) and getattr(
+        model, "mcp_exposed", True
+    )
 
 
 def _excluded(model, exclude):
@@ -945,7 +957,11 @@ def build_admin_providers(server, configs):
         site = config["site"]
         base = config["provider_class"] or AdminProvider
         for model, model_admin in list(site._registry.items()):
-            if model in seen or _excluded(model, config["exclude"]):
+            if (
+                model in seen
+                or not _exposed(model_admin, model)
+                or _excluded(model, config["exclude"])
+            ):
                 continue
             attrs = {
                 "actions": list(config["model_actions"].get(model, config["actions"])),

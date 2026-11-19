@@ -87,6 +87,7 @@ class MCPServer:
         models="tools",
         allow_writes=(),
         list_page_size=None,
+        related_labels=None,
     ):
         if models not in ("tools", "generic"):
             raise ValueError("models must be 'tools' or 'generic'.")
@@ -103,6 +104,7 @@ class MCPServer:
         self.exclude_apps = list(exclude_apps)
         self.allow_writes = list(allow_writes)
         self._list_page_size = list_page_size
+        self._related_labels = related_labels
         self._registry = {}
         self._admin_sites = []
         self._own_providers = set()
@@ -139,6 +141,13 @@ class MCPServer:
         if self._list_page_size is not None:
             return self._list_page_size
         return conf.get("LIST_PAGE_SIZE")
+
+    @property
+    def related_labels(self):
+        """Related records as ``{"id", "display"}`` instead of a bare id."""
+        if self._related_labels is not None:
+            return self._related_labels
+        return conf.get("RELATED_LABELS")
 
     @property
     def allowed_origins(self):

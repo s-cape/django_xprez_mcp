@@ -61,10 +61,10 @@ def record_action(
 
 
 INLINE = Annotated[str, "An inline from models_list"]
-CHILD = Annotated[str | int, "The inline row's id"]
+ROW = Annotated[str | int, "The inline row's id"]
 
 
-def record_children_list(
+def record_inline_list(
     ctx,
     model: MODEL,
     id: ID,
@@ -76,7 +76,7 @@ def record_children_list(
     next page."""
 
 
-def record_child_create(
+def record_inline_create(
     ctx,
     model: MODEL,
     id: ID,
@@ -86,18 +86,18 @@ def record_child_create(
     """Add a row to a record's inline."""
 
 
-def record_child_update(
+def record_inline_update(
     ctx,
     model: MODEL,
     id: ID,
     inline: INLINE,
-    child: CHILD,
+    row: ROW,
     data: Annotated[dict[str, Any], "Fields to change"],
 ):
     """Change a row of a record's inline. Only the fields given change."""
 
 
-def record_child_delete(ctx, model: MODEL, id: ID, inline: INLINE, child: CHILD):
+def record_inline_delete(ctx, model: MODEL, id: ID, inline: INLINE, row: ROW):
     """Remove a row from a record's inline."""
 
 
@@ -109,10 +109,10 @@ TOOLS = [
     (record_update, "update", {"idempotent": True}),
     (record_delete, "delete", {"destructive": True}),
     (record_action, "action", {}),
-    (record_children_list, "children_list", {"read_only": True}),
-    (record_child_create, "child_create", {}),
-    (record_child_update, "child_update", {"idempotent": True}),
-    (record_child_delete, "child_delete", {"destructive": True}),
+    (record_inline_list, "inline_list", {"read_only": True}),
+    (record_inline_create, "inline_create", {}),
+    (record_inline_update, "inline_update", {"idempotent": True}),
+    (record_inline_delete, "inline_delete", {"destructive": True}),
 ]
 
 
@@ -161,8 +161,8 @@ class GenericToolSpec(ToolSpec):
         if self.action == "action":
             ids = [parse_lookup(provider, value) for value in options["ids"]]
             return provider.run_admin_action(ctx, options["action"], ids)
-        if self.action == "children_list" or self.action.startswith("child_"):
-            return self.run_child(ctx, provider, id, data, **options)
+        if self.action == "inline_list" or self.action.startswith("inline_"):
+            return self.run_inline(ctx, provider, id, data, **options)
         if self.action == "list":
             arguments = dict(filters or {})
             arguments.update({k: v for k, v in options.items() if v is not None})
@@ -174,22 +174,22 @@ class GenericToolSpec(ToolSpec):
             arguments[provider.lookup_argument] = parse_lookup(provider, id)
         return provider.run(ctx, self.action, **arguments)
 
-    def run_child(self, ctx, provider, id, data, inline, child=None, **options):
+    def run_inline(self, ctx, provider, id, data, inline, row=None, **options):
         parent = parse_lookup(provider, id)
-        if self.action == "children_list":
+        if self.action == "inline_list":
             options = {k: v for k, v in options.items() if v is not None}
-            return provider.run_children_list(ctx, inline, parent, **options)
+            return provider.run_inline_list(ctx, inline, parent, **options)
         if inline not in provider.inline_specs:
             raise InvalidArguments(
                 f"Unknown inline {inline!r}. Available: "
                 f"{sorted(provider.inline_specs)}."
             )
-        operation = self.action[len("child_") :]
+        operation = self.action[len("inline_") :]
         arguments = {}
         if operation != "delete":
             func = provider.inline_argument_function(inline, operation)
             arguments = parse_function(func, data)
-        return provider.run_child(ctx, operation, inline, parent, child, **arguments)
+        return provider.run_inline(ctx, operation, inline, parent, row, **arguments)
 
 
 class GenericItem(Item):

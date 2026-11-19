@@ -321,20 +321,20 @@ class GenericAdminTests(AdminTestCase):
         )
         self.assertIn("email", clients["inlines"]["contacts"]["writable"])
 
-    def test_child_tools(self):
+    def test_inline_tools(self):
         data = self.structured(
-            "record_children_list",
+            "record_inline_list",
             {"model": "clients", "id": self.acme.pk, "inline": "contacts"},
             token="token-editor",
         )
         self.assertEqual(data["count"], 2)
         self.structured(
-            "record_child_update",
+            "record_inline_update",
             {
                 "model": "clients",
                 "id": self.acme.pk,
                 "inline": "contacts",
-                "child": self.ben.pk,
+                "row": self.ben.pk,
                 "data": {"name": "Benjamin"},
             },
             token="token-editor",
@@ -342,7 +342,7 @@ class GenericAdminTests(AdminTestCase):
         self.ben.refresh_from_db()
         self.assertEqual(self.ben.name, "Benjamin")
         error = self.failed(
-            "record_child_create",
+            "record_inline_create",
             {
                 "model": "clients",
                 "id": self.acme.pk,

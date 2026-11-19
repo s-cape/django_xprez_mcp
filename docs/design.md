@@ -29,7 +29,8 @@ that does not exist yet.
   notifications. They need a stream; see phase 5.
 - Async tools.
 - STDIO transport.
-- A token model. Projects plug in their own token lookup.
+- A token model in the core. Stored tokens are the optional
+  `xprez_mcp.contrib.tokens` app; projects can plug in their own lookup.
 
 ## Concepts
 
@@ -190,6 +191,13 @@ class ClientProvider(ModelProvider):
 - `list` returns `{"results", "count", "next_cursor"}`. The cursor is an
   opaque offset, so the server stays stateless. `page_size` (20) and
   `max_page_size` (100) bound `limit`.
+- Related records are their ids by default. `related_labels = True` returns
+  `{"id", "display"}` (`str()` of the record) for foreign keys, one-to-one and
+  to-many relations, so an agent need not look each one up; lists and inlines
+  prefetch them, one query per relation. `None` follows
+  `MCPServer(related_labels=...)`, then `XPREZ_MCP["RELATED_LABELS"]`
+  (default `False`). Generic foreign keys stay `str()`. Filters and writes
+  still take ids.
 - Writes are validated by `serializer` when there is one, otherwise by a
   `ModelForm` (`form`, default `ModelForm`) for just the fields sent. Writable
   fields are `write_fields`, by default the editable fields among `fields` (or
@@ -337,6 +345,9 @@ order of autodiscovery). Models registered on the server explicitly win;
 `exclude` removes models or apps; `provider_class` sets the base class;
 `exposure` sets the providers' `exposure`. The generated classes take the
 `ModelAdmin`'s module, so `EXCLUDE_APPS` applies by the admin's app.
+`mcp_exposed = False` on a `ModelAdmin`, an inline or a model keeps it out of
+`register_admin` and of the parent's inline tools, wherever it is
+registered (credentials, for example).
 
 **Inlines.** Inline rows are edited one at a time through tools scoped to
 the parent, never nested in the parent's payload (large nested schemas are
@@ -344,10 +355,10 @@ where models make mistakes, and "missing row" would be ambiguous):
 
 | Tool | Generic mode |
 |---|---|
-| `clients_contacts_list(parent, limit, cursor)` | `record_children_list(model, id, inline, ...)` |
-| `clients_contacts_create(parent, ...)` | `record_child_create(model, id, inline, data)` |
-| `clients_contacts_update(parent, id, ...)` | `record_child_update(model, id, inline, child, data)` |
-| `clients_contacts_delete(parent, id)` | `record_child_delete(model, id, inline, child)` |
+| `clients_contacts_list(parent, limit, cursor)` | `record_inline_list(model, id, inline, ...)` |
+| `clients_contacts_create(parent, ...)` | `record_inline_create(model, id, inline, data)` |
+| `clients_contacts_update(parent, id, ...)` | `record_inline_update(model, id, inline, row, data)` |
+| `clients_contacts_delete(parent, id)` | `record_inline_delete(model, id, inline, row)` |
 
 - The inlines are those of `get_formsets_with_inlines(request, obj)`, so
   per-user and per-object rules hold; `inlines = [ContactInline]` limits
@@ -575,13 +586,58 @@ raises `AuthenticationFailed` to reject a request outright.
 
 - `xprez_mcp.auth.bearer_token`: reads `Authorization: Bearer <token>` and calls
   `XPREZ_MCP["TOKEN_RESOLVER"]` (`resolver(request, token) -> user | None`).
-  Projects keep their own token models.
+  Without it, the stored tokens of `xprez_mcp.contrib.tokens` when that app
+  is installed; otherwise `ImproperlyConfigured`.
 - `xprez_mcp.auth.session`: `request.user` from the session.
 
 Without a user the endpoint answers `401` with `WWW-Authenticate: Bearer`,
 unless the server was created with `allow_anonymous=True`.
 
 OAuth (protected resource metadata, RFC 9728) is planned for later.
+
+### Stored tokens (`xprez_mcp.contrib.tokens`)
+
+The default for projects without a token model of their own: add the app to
+`INSTALLED_APPS`, migrate, and users create tokens under "MCP tokens" in
+the admin.
+
+- `Token`: `user`, `name` (where it is used), `expires` (optional),
+  `created`, `last_used`
+  (updated at most once a minute). A user can have any number of tokens.
+- The key is `mcp_<key_id>_<secret>`: 12 hex characters to find the row, 32
+  random bytes of secret. Only its SHA-256 hash is stored (the key is random,
+  so a slow password hash is not needed). It is shown once, after creating the
+  token, and never again; a lost key means a new token. Deleting a token
+  revokes it.
+- `TokenResolver` (`xprez_mcp.contrib.tokens.auth.resolve`) compares the hash
+  in constant time and rejects expired tokens and
+  inactive users. It loads the user as the session would (the first of
+  `AUTHENTICATION_BACKENDS` whose `get_user` returns one; override `get_user`)
+  and sets `request.mcp_token`. Who may use a server stays the server
+  `permission`.
+- `TokenAdmin` (registered on `admin.site`) works under the model
+  permissions (`add_token`, `view_token`, `change_token`, `delete_token`).
+  Non-superusers see only their own tokens and create tokens only for
+  themselves (`get_queryset`, `formfield_for_foreignkey`); superusers manage
+  everyone's. The key is shown once, in the admin message after "Save". The
+  message storage holds it for that one redirect (a signed cookie with the
+  default storage; `MESSAGE_STORAGE` session storage keeps it server-side).
+  Project rules go in the usual `ModelAdmin` methods of a subclass, for
+  example refusing `has_add_permission` while an administrator acts as
+  another user:
+
+```python
+admin.site.unregister(Token)
+
+@admin.register(Token)
+class ProjectTokenAdmin(TokenAdmin):
+    def has_add_permission(self, request):
+        return not request.session.get("impersonating") and super().has_add_permission(request)
+```
+
+`Token` and `TokenAdmin` set `mcp_exposed = False`, which keeps them out of
+`AdminProvider`: an MCP client does not manage the credentials it could
+authenticate with.
 
 ## Settings
 
@@ -593,19 +649,20 @@ XPREZ_MCP = {
     "AUTODISCOVER": True,
     "AUTODISCOVER_MODULE": "mcp",
     "AUTHENTICATION": ["xprez_mcp.auth.bearer_token"],
-    "TOKEN_RESOLVER": None,        # "myapp.tokens.resolve"
+    "TOKEN_RESOLVER": None,        # "myapp.tokens.resolve"; None: contrib.tokens
     "ALLOWED_ORIGINS": [],
     "EXCLUDE": [],
     "EXCLUDE_APPS": [],
     "ALLOW_WRITES": [],            # third-party apps whose writes are exposed
     "LIST_PAGE_SIZE": None,        # page size of */list; None sends everything
+    "RELATED_LABELS": False,       # related records as {"id", "display"}
 }
 ```
 
 With several servers, the settings are defaults:
 
-- `NAME`, `VERSION`, `AUTHENTICATION`, `PERMISSION`, `ALLOWED_ORIGINS` and
-  `LIST_PAGE_SIZE` are replaced by the matching `MCPServer` argument.
+- `NAME`, `VERSION`, `AUTHENTICATION`, `PERMISSION`, `ALLOWED_ORIGINS`,
+  `LIST_PAGE_SIZE` and `RELATED_LABELS` are replaced by the matching `MCPServer` argument.
   `ALLOW_WRITES` is combined with the server's `allow_writes`.
 - `EXCLUDE` and `EXCLUDE_APPS` are combined with the server's `exclude` /
   `exclude_apps`. A server can exclude more but never bring back what the

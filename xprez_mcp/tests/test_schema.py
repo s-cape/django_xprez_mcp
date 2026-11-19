@@ -52,7 +52,10 @@ class AnnotationSchemaTests(SimpleTestCase):
         self.assertEqual(annotation_schema(Size), {"enum": ["s", "m"]})
 
     def test_unions(self):
-        self.assertEqual(annotation_schema(int | None), {"type": ["integer", "null"]})
+        self.assertEqual(
+            annotation_schema(int | None),
+            {"anyOf": [{"type": "integer"}, {"type": "null"}]},
+        )
         self.assertEqual(
             annotation_schema(list[int] | None),
             {
@@ -61,6 +64,13 @@ class AnnotationSchemaTests(SimpleTestCase):
                     {"type": "null"},
                 ]
             },
+        )
+
+    def test_free_form_dict(self):
+        self.assertEqual(annotation_schema(dict[str, Any]), {"type": "object"})
+        self.assertEqual(
+            annotation_schema(dict[str, int]),
+            {"type": "object", "additionalProperties": {"type": "integer"}},
         )
 
     def test_annotated_description(self):

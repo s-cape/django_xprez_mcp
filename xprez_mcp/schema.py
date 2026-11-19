@@ -107,10 +107,8 @@ def _schema(annotation):
     if origin is Literal:
         return {"enum": list(args)}
     if _is_union(annotation):
-        options = [annotation_schema(arg) for arg in args]
-        if all(list(option) == ["type"] for option in options):
-            return {"type": [option["type"] for option in options]}
-        return {"anyOf": options}
+        # anyOf rather than a ``type`` array: single-type dialects reject arrays.
+        return {"anyOf": [annotation_schema(arg) for arg in args]}
     if annotation in (list, set, frozenset, tuple):
         return {"type": "array"}
     if origin in (list, set, frozenset) or (
@@ -120,7 +118,10 @@ def _schema(annotation):
     if annotation is dict:
         return {"type": "object"}
     if origin is dict:
-        return {"type": "object", "additionalProperties": annotation_schema(args[1])}
+        values = annotation_schema(args[1])
+        if not values:  # dict[str, Any]: an empty schema constrains nothing
+            return {"type": "object"}
+        return {"type": "object", "additionalProperties": values}
     raise TypeError(f"Unsupported type annotation: {annotation!r}")
 
 

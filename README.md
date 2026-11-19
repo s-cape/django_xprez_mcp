@@ -9,9 +9,8 @@ Early development: phases 1 (core), 2 (models) and 3 (admin). See
 
 ```python
 # settings.py
-INSTALLED_APPS = [..., "xprez_mcp"]
+INSTALLED_APPS = [..., "xprez_mcp", "xprez_mcp.contrib.tokens"]
 XPREZ_MCP = {
-    "TOKEN_RESOLVER": "myapp.tokens.resolve",  # (request, token) -> user | None
     "PERMISSION": "myapp.use_mcp",  # required: who may use the server at all
 }
 
@@ -20,6 +19,12 @@ from xprez_mcp import mcp
 
 urlpatterns = [path("mcp/", mcp.urls)]
 ```
+
+Clients send `Authorization: Bearer <key>`. With `xprez_mcp.contrib.tokens`
+users create keys under "MCP tokens" in the admin (shown once, stored hashed,
+revoked by deleting). Projects with their own token model leave the app out
+and set `XPREZ_MCP["TOKEN_RESOLVER"] = "myapp.tokens.resolve"`
+(`(request, token) -> user | None`).
 
 ```python
 # myapp/mcp.py: discovered automatically, like admin.py
