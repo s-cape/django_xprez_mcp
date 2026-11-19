@@ -23,8 +23,12 @@ jobs:
       fail-fast: false
       matrix:
         python: ["3.10", "3.11", "3.12", "3.13"]
-        django: ["4.2", "5.2"]
+        django: ["4.1", "4.2", "5.2"]
         exclude:
+          - python: "3.12"
+            django: "4.1"
+          - python: "3.13"
+            django: "4.1"
           - python: "3.13"
             django: "4.2"
     steps:
