@@ -413,6 +413,20 @@ class RelatedLabelsTests(TestCase):
         self.assertIsNone(provider.field_value(self.bare, "industry"))
         self.assertEqual(provider.field_value(self.bare, "tags"), [])
 
+    def test_parent_link_replaced_by_property(self):
+        # as django-polymorphic does
+        colored = ColoredTag.objects.create(name="red", color="#f00")
+        cls = type("P", (ModelProvider,), {"fields": ["tag_ptr"]})
+        provider = cls(MCPServer(name="labels", related_labels=True), model=ColoredTag)
+        original = ColoredTag.tag_ptr
+        ColoredTag.tag_ptr = property(lambda obj: Tag.objects.get(pk=obj.pk))
+        try:
+            rows = provider.serialize(None, ColoredTag.objects.all(), many=True)
+        finally:
+            ColoredTag.tag_ptr = original
+        tag = Tag.objects.get(pk=colored.pk)
+        self.assertEqual(rows, [{"tag_ptr": {"id": tag.pk, "display": str(tag)}}])
+
     def test_reverse_one_to_one(self):
         colored = ColoredTag.objects.create(name="red", color="#f00")
         cls = type("P", (ModelProvider,), {"fields": ["coloredtag"]})

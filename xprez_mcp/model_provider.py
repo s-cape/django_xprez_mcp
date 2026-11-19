@@ -518,7 +518,8 @@ class ModelProvider(Provider):
             if field.is_relation and (field.concrete or field.auto_created):
                 if field.auto_created and not field.concrete:
                     name = field.get_accessor_name()
-                lookups.append(name)
+                if _supports_prefetch(instances[0], name):
+                    lookups.append(name)
         if lookups:
             prefetch_related_objects(instances, *lookups)
 
@@ -878,3 +879,21 @@ class ModelProvider(Provider):
                 for name, annotation, _ in self.write_parameters(partial=True)
             }
         return entry
+
+
+def _supports_prefetch(instance, name):
+    """Whether Django can prefetch the accessor; django-polymorphic replaces
+    parent links with plain properties, which it cannot."""
+    accessor = getattr(type(instance), name, None)
+    if isinstance(accessor, property):  # reading it would query
+        return False
+    if not _is_prefetcher(accessor):  # to-many: the manager prefetches
+        accessor = getattr(instance, name, None)
+    return _is_prefetcher(accessor)
+
+
+def _is_prefetcher(value):
+    # get_prefetch_queryset is Django < 5.0, get_prefetch_querysets 5.0+
+    return hasattr(value, "get_prefetch_querysets") or hasattr(
+        value, "get_prefetch_queryset"
+    )

@@ -197,8 +197,10 @@ class ClientProvider(ModelProvider):
 - Related records are their ids by default. `related_labels = True` returns
   `{"id", "display"}` (`str()` of the record) for foreign keys, one-to-one and
   to-many relations, so an agent need not look each one up; lists and inlines
-  prefetch them, one query per relation. `None` follows
-  `MCPServer(related_labels=...)`, then `XPREZ_MCP["RELATED_LABELS"]`
+  prefetch them, one query per relation (an accessor that cannot be
+  prefetched, like a parent link django-polymorphic replaces with a property,
+  is read per row). `None` follows `MCPServer(related_labels=...)`, then
+  `XPREZ_MCP["RELATED_LABELS"]`
   (default `False`). Generic foreign keys stay `str()`. Filters and writes
   still take ids.
 - Writes are validated by `serializer` when there is one, otherwise by a
