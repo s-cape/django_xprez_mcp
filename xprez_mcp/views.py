@@ -14,6 +14,7 @@ from .errors import (
     INTERNAL_ERROR,
     INVALID_REQUEST,
     PARSE_ERROR,
+    AuthenticationFailed,
     RpcError,
 )
 from .results import dumps
@@ -59,11 +60,12 @@ class MCPView(View):
         if version and version not in server.protocol_versions:
             return HttpResponse("Unsupported MCP-Protocol-Version.", status=400)
 
-        user = server.authenticate(request)
+        try:
+            user = server.authenticate(request)
+        except AuthenticationFailed:
+            return unauthorized()
         if user is None and not server.allow_anonymous:
-            response = JsonResponse({"error": "Unauthorized"}, status=401)
-            response["WWW-Authenticate"] = "Bearer"
-            return response
+            return unauthorized()
         if not server.has_access(server.get_context(request, user, version)):
             return JsonResponse({"error": "Forbidden"}, status=403)
 
@@ -97,3 +99,9 @@ class MCPView(View):
             logger.exception("MCP method %s failed", method)
             return rpc_error(message_id, INTERNAL_ERROR, "Internal error.")
         return rpc_response(message_id, result=result)
+
+
+def unauthorized():
+    response = JsonResponse({"error": "Unauthorized"}, status=401)
+    response["WWW-Authenticate"] = "Bearer"
+    return response

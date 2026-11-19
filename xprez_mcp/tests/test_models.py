@@ -3,7 +3,9 @@ import unittest
 
 from django.contrib.auth.models import Permission, User
 from django.core.exceptions import ImproperlyConfigured
+from django.db import connection
 from django.test import SimpleTestCase, TestCase, override_settings
+from django.test.utils import CaptureQueriesContext
 
 from xprez_mcp import MCPServer, ModelProvider
 from xprez_mcp.context import CallContext
@@ -162,6 +164,15 @@ class ToolsTests(ModelTestCase):
         self.assertEqual(
             [row["slug"] for row in data["results"]], ["mine", "bistro", "acme"]
         )
+
+    def test_ordering_ends_with_pk(self):
+        """Cursors are offsets: rows tied on the ordering would repeat across pages."""
+        for arguments in ({}, {"ordering": "-name"}):
+            with self.subTest(arguments=arguments):
+                with CaptureQueriesContext(connection) as queries:
+                    self.structured("clients_list", arguments)
+                selects = [q["sql"] for q in queries if " LIMIT " in q["sql"]]
+                self.assertRegex(selects[-1], r'"id" ASC LIMIT \d+$')
 
     def test_pagination(self):
         first = self.structured("clients_list", {"limit": 2})
@@ -512,6 +523,39 @@ class ConfigurationTests(SimpleTestCase):
         self.assertEqual(field_annotation(field("industry")), int | None)
         self.assertEqual(field_annotation(field("tags")), list[int])
         self.assertEqual(field_annotation(field("founded")), datetime.date | None)
+
+
+class FilterNamedActionTests(TestCase):
+    """A filter or field may be named ``action``, which is also ``run``'s argument."""
+
+    def test_search_and_list(self):
+        class TagProvider(ModelProvider):
+            fields = ["id", "name"]
+            filters = {"action": "name"}
+
+        generic = MCPServer(name="action-generic", models="generic")
+        tools = MCPServer(name="action-tools")
+        generic.register(Tag, TagProvider)
+        tools.register(Tag, TagProvider)
+        Tag.objects.create(name="keep")
+        Tag.objects.create(name="drop")
+        user = User.objects.create_user("dana")
+        for server, name, arguments in (
+            (
+                generic,
+                "records_search",
+                {"model": "tags", "filters": {"action": "keep"}},
+            ),
+            (tools, "tags_list", {"action": "keep"}),
+        ):
+            with self.subTest(name=name):
+                result = server.call_tool(
+                    CallContext(server=server, user=user),
+                    {"name": name, "arguments": arguments},
+                )
+                self.assertFalse(result["isError"], result)
+                found = [row["name"] for row in result["structuredContent"]["results"]]
+                self.assertEqual(found, ["keep"])
 
 
 @unittest.skipIf(rest_framework is None, "Django REST framework is not installed")

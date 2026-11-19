@@ -28,7 +28,6 @@ from .errors import (
     METHOD_NOT_FOUND,
     RESOURCE_NOT_FOUND,
     AlreadyRegistered,
-    AuthenticationFailed,
     InvalidArguments,
     InvalidName,
     NotRegistered,
@@ -409,12 +408,10 @@ class MCPServer:
         ]
 
     def authenticate(self, request):
-        """The user for this request, or None when it is not authenticated."""
+        """The user for this request, or None when it is not authenticated.
+        Raises ``AuthenticationFailed`` when a backend rejects the request."""
         for backend in self.get_authentication_backends():
-            try:
-                user = backend(request)
-            except AuthenticationFailed:
-                return None
+            user = backend(request)
             if user is not None:
                 return user
         return None

@@ -146,8 +146,10 @@ class AdminProvider(ModelProvider):
         if "delete_selected" in self.admin_actions:
             raise ImproperlyConfigured(f"{label}: delete_selected is never exposed.")
         model_admin = self.model_admin
-        if self.fields is None and self.serializer is None:
-            self.fields = self.admin_list_fields()
+        # list columns then follow get_list_display(request) per call
+        self.fields_from_admin = self.fields is None and self.serializer is None
+        if self.fields_from_admin:
+            self.fields = self.admin_list_fields(model_admin.list_display)
         if not self.search_fields:
             self.search_fields = tuple(model_admin.search_fields)
         if not self.filters:
@@ -163,8 +165,9 @@ class AdminProvider(ModelProvider):
             ]
 
     def get_hidden_fields(self, model_admin):
-        """``hidden_fields`` and the fields the admin's form shows masked."""
-        hidden = set(self.hidden_fields) if model_admin is self.model_admin else set()
+        """``hidden_fields`` and the fields the admin's form shows masked, on the
+        model and its inlines."""
+        hidden = set(self.hidden_fields)
         for name, field in model_admin.form.base_fields.items():
             if isinstance(field, ReadOnlyPasswordHashField):
                 hidden.add(name)
@@ -179,15 +182,22 @@ class AdminProvider(ModelProvider):
 
     @cached_property
     def display_callables(self):
-        return {
-            entry.__name__: entry
-            for entry in self.model_admin.list_display
-            if callable(entry)
-        }
+        return _display_callables(self.model_admin.list_display)
 
-    def admin_list_fields(self):
+    def list_display(self, ctx):
+        """``(fields, callables)`` of the list results this user gets."""
+        if not self.fields_from_admin:
+            return self.fields, self.display_callables
+        entries = self.model_admin.get_list_display(self.admin_request(ctx))
+        hidden = self.get_hidden_fields(self.model_admin)
+        fields = [
+            name for name in self.admin_list_fields(entries) if name not in hidden
+        ]
+        return fields, _display_callables(entries)
+
+    def admin_list_fields(self, list_display):
         names = [self.lookup_name]
-        for entry in self.model_admin.list_display:
+        for entry in list_display:
             if entry == "action_checkbox":
                 continue
             if callable(entry):
@@ -370,24 +380,20 @@ class AdminProvider(ModelProvider):
         return queryset.distinct() if duplicates else queryset
 
     def get_list_ordering(self, ctx):
-        ordering = list(self.model_admin.get_ordering(self.admin_request(ctx)) or [])
-        if not ordering:
-            return self.get_ordering()
-        if not {"pk", "-pk", self.opts.pk.name, f"-{self.opts.pk.name}"} & set(
-            ordering
-        ):
-            ordering.append("pk")  # stable pages, as the changelist does
-        return ordering
+        ordering = self.model_admin.get_ordering(self.admin_request(ctx))
+        return list(ordering) if ordering else self.get_ordering()
 
-    def field_value(self, instance, name, model_admin=None):
+    def field_value(self, instance, name, model_admin=None, callables=None):
         model_admin = model_admin or self.model_admin
+        if callables is None:
+            callables = self.display_callables
         if name == "display":
             return str(instance)
         # errors the admin shows as its empty value: the changelist catches
         # ObjectDoesNotExist, read-only fields AttributeError and ValueError too
-        if model_admin is self.model_admin and name in self.display_callables:
+        if model_admin is self.model_admin and name in callables:
             try:
-                return plain(self.display_callables[name](instance))
+                return plain(callables[name](instance))
             except ObjectDoesNotExist:
                 return None
         try:
@@ -415,6 +421,17 @@ class AdminProvider(ModelProvider):
         return names
 
     def serialize(self, ctx, value, many=False, detail=False):
+        if many and self.fields_from_admin:
+            names, callables = self.list_display(ctx)
+            rows = list(value)
+            self.prefetch_labels(rows, names)
+            return [
+                {
+                    name: self.field_value(row, name, callables=callables)
+                    for name in names
+                }
+                for row in rows
+            ]
         configured = self.detail_serializer or self.detail_fields
         if many or not detail or self.serializer is not None or configured:
             return super().serialize(ctx, value, many=many, detail=detail)
@@ -922,6 +939,8 @@ class AdminProvider(ModelProvider):
 
     def describe(self, ctx):
         entry = super().describe(ctx)
+        if self.fields_from_admin:
+            entry["fields"] = self.list_display(ctx)[0]
         # the key that holds the lookup in results (user_ptr on a multi-table child)
         entry["lookup"] = self.lookup_name
         if self.has_action_permission(ctx, "action"):
@@ -948,6 +967,10 @@ class AdminProvider(ModelProvider):
                 inlines[name] = inline
             entry["inlines"] = inlines
         return entry
+
+
+def _display_callables(list_display):
+    return {entry.__name__: entry for entry in list_display if callable(entry)}
 
 
 def _exposed(model_admin, model):

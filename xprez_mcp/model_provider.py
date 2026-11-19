@@ -471,6 +471,14 @@ class ModelProvider(Provider):
     def get_list_ordering(self, ctx):
         return self.get_ordering()
 
+    def with_pk_tiebreak(self, ordering):
+        """``ordering`` ending in the pk: cursors are offsets, so ties repeat rows."""
+        names = {o.lstrip("-") for o in ordering if isinstance(o, str)}
+        if {"pk", self.opts.pk.name} & names:
+            return list(ordering)
+        else:
+            return list(ordering) + ["pk"]
+
     def get_object(self, ctx, value, action="get"):
         queryset = self.get_queryset(ctx)
         try:
@@ -658,7 +666,7 @@ class ModelProvider(Provider):
             queryset = self.search(ctx, queryset, query)
         queryset = self.filter_queryset(ctx, queryset, filters)
         ordering = [ordering] if ordering else self.get_list_ordering(ctx)
-        queryset = queryset.order_by(*ordering)
+        queryset = queryset.order_by(*self.with_pk_tiebreak(ordering))
         count = queryset.count()
         page = list(queryset[offset : offset + limit])
         more = offset + limit < count
@@ -693,7 +701,8 @@ class ModelProvider(Provider):
             self.perform_delete(ctx, instance)
         return {"deleted": True, self.lookup_argument: value}
 
-    def run(self, ctx, action, **kwargs):
+    def run(self, ctx, action, /, **kwargs):
+        """``action`` is positional-only so a filter or field may be named action."""
         return getattr(self, f"run_{action}")(ctx, **kwargs)
 
     # --- generated items ----------------------------------------------------

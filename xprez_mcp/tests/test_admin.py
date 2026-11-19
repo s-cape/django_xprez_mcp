@@ -5,11 +5,11 @@ from django.contrib.auth.models import Permission, User
 from django.core.exceptions import ImproperlyConfigured
 from django.test import SimpleTestCase, TestCase
 
-from xprez_mcp import AdminProvider, MCPServer
+from xprez_mcp import AdminProvider, MCPServer, ToolError
 from xprez_mcp.context import CallContext
 
 from .test_models import ModelTestCase
-from .testapp.admin import site
+from .testapp.admin import ClientAdmin, site
 from .testapp.admin_servers import admin_mcp
 from .testapp.models import Client, ColoredTag, Contact, Industry, Swatch, Tag
 
@@ -433,6 +433,61 @@ class HiddenFieldsTests(TestCase):
         rows = provider.serialize(ctx, User.objects.filter(pk=root.pk), many=True)
         self.assertNotIn("email", rows[0])
         self.assertNotIn("email", provider.get_write_fields())
+
+
+class AdminVisibilityTests(AdminTestCase):
+    def test_hidden_fields_on_inlines(self):
+        local_site = admin.AdminSite(name="hidden-inlines")
+        local_site.register(Client, ClientAdmin)
+        attrs = {
+            "admin_site": local_site,
+            "actions": ["list", "get", "update"],
+            "hidden_fields": ["email"],
+        }
+        server = MCPServer(name="hidden-inlines")
+        provider = type("P", (AdminProvider,), attrs)(server, model=Client)
+        ctx = CallContext(server=server, user=self.root)
+        data = provider.serialize(ctx, self.acme, detail=True)
+        self.assertNotIn("email", data["inlines"]["contacts"]["results"][0])
+        listed = provider.run_inline_list(ctx, "contacts", self.acme.pk)
+        self.assertNotIn("email", listed["results"][0])
+        names = [param[0] for param in provider.inline_parameters("contacts", "update")]
+        self.assertNotIn("email", names)
+        self.assertNotIn(
+            "email", provider.describe(ctx)["inlines"]["contacts"]["fields"]
+        )
+        with self.assertRaisesMessage(ToolError, "You cannot set email."):
+            provider.run_inline(
+                ctx, "update", "contacts", self.acme.pk, self.ben.pk, email="x@y.z"
+            )
+
+    def test_list_display_per_user(self):
+        class PerUserAdmin(ClientAdmin):
+            def get_list_display(self, request):
+                if request.user.is_superuser:
+                    return [*self.list_display, secret]
+                return ["name"]
+
+        def secret(obj):
+            return f"secret-{obj.slug}"
+
+        local_site = admin.AdminSite(name="per-user")
+        local_site.register(Client, PerUserAdmin)
+        server = MCPServer(name="per-user")
+        provider = type("P", (AdminProvider,), {"admin_site": local_site})(
+            server, model=Client
+        )
+        queryset = Client.objects.filter(pk=self.acme.pk)
+        viewer = CallContext(server=server, user=self.viewer)
+        self.assertEqual(
+            provider.serialize(viewer, queryset, many=True),
+            [{"id": self.acme.pk, "name": "Acme"}],
+        )
+        self.assertEqual(provider.describe(viewer)["fields"], ["id", "name"])
+        root = CallContext(server=server, user=self.root)
+        row = provider.serialize(root, queryset, many=True)[0]
+        self.assertEqual(row["upper_name"], "ACME")
+        self.assertEqual(row["secret"], "secret-acme")
 
 
 class InlineOfInheritedParentTests(TestCase):

@@ -1,7 +1,10 @@
+import json
+
 from django.core.exceptions import ImproperlyConfigured
-from django.test import SimpleTestCase, override_settings
+from django.test import RequestFactory, SimpleTestCase, override_settings
 
 from xprez_mcp import MCPServer
+from xprez_mcp.auth import BearerToken
 from xprez_mcp.checks import check_servers
 from xprez_mcp.context import CallContext
 from xprez_mcp.permissions import check_permission
@@ -41,6 +44,24 @@ class ServerAccessTests(MCPTestCase):
         server = MCPServer(name="z", authentication=[], allow_anonymous=True)
         ctx = CallContext(server=server)
         self.assertFalse(server.has_access(ctx))
+
+    def test_rejected_token_not_anonymous(self):
+        server = MCPServer(
+            name="public",
+            authentication=[BearerToken(resolver=lambda request, token: None)],
+            allow_anonymous=True,
+            permission="any",
+        )
+        view = server.get_view()
+        body = json.dumps(PING)
+        request = RequestFactory().post("/", body, content_type="application/json")
+        self.assertEqual(view(request).status_code, 200)
+        request = RequestFactory().post(
+            "/", body, content_type="application/json", HTTP_AUTHORIZATION="Bearer x"
+        )
+        response = view(request)
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(response["WWW-Authenticate"], "Bearer")
 
     def test_per_server_allowed_origins(self):
         server = MCPServer(name="o", allowed_origins=["https://app.example"])

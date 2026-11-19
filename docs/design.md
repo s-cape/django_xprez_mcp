@@ -190,7 +190,9 @@ class ClientProvider(ModelProvider):
   `f(ctx, queryset, value)`, typed by its `value` hint (default `str`).
   Lookups across to-many relations add `distinct()`.
 - Ordering is `ordering`, then the model's `Meta.ordering`, then `pk`.
-  `ordering_fields` adds an `ordering` argument.
+  `ordering_fields` adds an `ordering` argument. A list always ends with `pk`
+  as a tie-breaker (unless it already contains it): the cursor is an offset,
+  so rows tied on the ordering would repeat or vanish between pages.
 - `list` returns `{"results", "count", "next_cursor"}`. The cursor is an
   opaque offset, so the server stays stateless. `page_size` (20) and
   `max_page_size` (100) bound `limit`.
@@ -299,15 +301,16 @@ therefore never adds a write tool on its own.
 **Mapping.** `AdminProvider` is a `ModelProvider` whose hooks call the
 `ModelAdmin`:
 
-- `fields` (list results): `list_display` entries that are model fields,
-  properties or admin/model methods; `__str__` becomes `display`. The lookup
-  field is always included. `get` and write results show
+- `fields` (list results): `get_list_display(request)` entries that are model
+  fields, properties or admin/model methods, per call; `__str__` becomes
+  `display`. The lookup field is always included. `get` and write results show
   `get_fields(request, obj)` (readonly fields included) unless
   `detail_fields` / `detail_serializer` are set. Values that are not JSON
   (model instances, HTML) are sent as strings.
 - Hidden fields are never read or written: `hidden_fields` and the fields the
   admin's form only shows masked (`ReadOnlyPasswordHashField`, so a user
-  admin never sends password hashes), on the model and its inlines.
+  admin never sends password hashes), on the model and its inlines. A name in
+  `hidden_fields` is hidden on every inline that has a field of that name.
 - Search: `get_search_results(request, queryset, query)`, with `distinct()`
   when it may return duplicates. `query` exists when the admin has
   `search_fields`.
@@ -318,7 +321,8 @@ therefore never adds a write tool on its own.
   checked per call against `lookups(request, model_admin)` (an invalid value
   returns the options) and applied with `queryset(request, qs)`. Unsupported
   entries are skipped and reported by `mcp_inspect`.
-- Ordering: `get_ordering(request)`, with `pk` added for stable pages.
+- Ordering: `get_ordering(request)`, then the model's `Meta.ordering`; `pk` is
+  added for stable pages like on every list.
 - Writes: the schema comes from the admin's fields read without a user
   (`get_fields` / `get_readonly_fields`, or the static `fields` /
   `fieldsets` when an override needs a user), limited to editable model
@@ -592,7 +596,8 @@ converted with the same type hints.
 
 `XPREZ_MCP["AUTHENTICATION"]` (or `MCPServer(authentication=[...])`) is a list
 of callables `backend(request) -> user | None`, tried in order. A backend
-raises `AuthenticationFailed` to reject a request outright.
+raises `AuthenticationFailed` to reject a request outright: `401`, even on a
+server with `allow_anonymous=True` (a bad token is not served as anonymous).
 
 - `xprez_mcp.auth.bearer_token`: reads `Authorization: Bearer <token>` and calls
   `XPREZ_MCP["TOKEN_RESOLVER"]` (`resolver(request, token) -> user | None`).
