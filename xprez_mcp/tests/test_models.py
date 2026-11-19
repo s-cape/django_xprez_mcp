@@ -1,5 +1,6 @@
 import datetime
 import unittest
+from typing import Optional
 
 from django.contrib.auth.models import Permission, User
 from django.core.exceptions import ImproperlyConfigured
@@ -546,9 +547,9 @@ class ConfigurationTests(SimpleTestCase):
     def test_field_annotations(self):
         field = Client._meta.get_field
         self.assertIs(field_annotation(field("name")), str)
-        self.assertEqual(field_annotation(field("industry")), int | None)
+        self.assertEqual(field_annotation(field("industry")), Optional[int])
         self.assertEqual(field_annotation(field("tags")), list[int])
-        self.assertEqual(field_annotation(field("founded")), datetime.date | None)
+        self.assertEqual(field_annotation(field("founded")), Optional[datetime.date])
 
 
 class FilterNamedActionTests(TestCase):

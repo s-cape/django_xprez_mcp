@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Optional
 
 
 @dataclass
@@ -12,5 +12,5 @@ class CallContext:
     server: Any
     request: Any = None
     user: Any = None
-    protocol_version: str | None = None
+    protocol_version: Optional[str] = None
     meta: dict = field(default_factory=dict)

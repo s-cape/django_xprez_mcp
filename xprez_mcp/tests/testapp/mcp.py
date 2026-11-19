@@ -2,7 +2,7 @@
 
 import datetime
 import enum
-from typing import Annotated, Literal
+from typing import Annotated, Literal, Optional
 
 from django.core.exceptions import PermissionDenied, ValidationError
 from django.http import Http404
@@ -43,7 +43,7 @@ class NotesProvider(Provider):
         ctx,
         day: datetime.date,
         color: Color = Color.RED,
-        tags: list[str] | None = None,
+        tags: Optional[list[str]] = None,
     ):
         return {"day": day, "color": color.value, "tags": tags}
 

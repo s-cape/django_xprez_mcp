@@ -10,7 +10,7 @@ import decimal
 import inspect
 import uuid
 from functools import cached_property
-from typing import Annotated, Literal
+from typing import Annotated, Literal, Optional, Union
 
 import django
 from django.contrib import admin
@@ -837,7 +837,7 @@ class AdminProvider(ModelProvider):
         inline_class, _ = self.get_exposed_inline(name)
         parent = ("parent", self.lookup_annotation, inspect.Parameter.empty)
         row_annotation = Annotated[
-            int | str, f"The {inline_class.model._meta.verbose_name}'s id"
+            Union[int, str], f"The {inline_class.model._meta.verbose_name}'s id"
         ]
         row = ("row", row_annotation, inspect.Parameter.empty)
         if operation == "list":
@@ -845,7 +845,7 @@ class AdminProvider(ModelProvider):
             cursor = "next_cursor from the previous page"
             params = [
                 ("limit", Annotated[int, limit], self.page_size),
-                ("cursor", Annotated[str | None, cursor], None),
+                ("cursor", Annotated[Optional[str], cursor], None),
             ]
             return [parent, *params] if with_parent else params
         if operation == "create":

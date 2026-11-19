@@ -1,8 +1,10 @@
 import datetime
 import decimal
 import enum
+import sys
+import unittest
 import uuid
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, Optional
 
 from django.core.exceptions import ImproperlyConfigured
 from django.test import SimpleTestCase
@@ -53,17 +55,24 @@ class AnnotationSchemaTests(SimpleTestCase):
 
     def test_unions(self):
         self.assertEqual(
-            annotation_schema(int | None),
+            annotation_schema(Optional[int]),
             {"anyOf": [{"type": "integer"}, {"type": "null"}]},
         )
         self.assertEqual(
-            annotation_schema(list[int] | None),
+            annotation_schema(Optional[list[int]]),
             {
                 "anyOf": [
                     {"type": "array", "items": {"type": "integer"}},
                     {"type": "null"},
                 ]
             },
+        )
+
+    @unittest.skipIf(sys.version_info < (3, 10), "X | Y needs Python 3.10")
+    def test_pipe_unions(self):
+        self.assertEqual(
+            annotation_schema(eval("int | None")),
+            {"anyOf": [{"type": "integer"}, {"type": "null"}]},
         )
 
     def test_free_form_dict(self):
@@ -133,9 +142,9 @@ class CoerceArgumentsTests(SimpleTestCase):
         ctx,
         day: datetime.date,
         size: Size = Size.S,
-        tags: list[str] | None = None,
-        amount: decimal.Decimal | None = None,
-        key: uuid.UUID | None = None,
+        tags: Optional[list[str]] = None,
+        amount: Optional[decimal.Decimal] = None,
+        key: Optional[uuid.UUID] = None,
         flag: bool = False,
     ):
         pass
@@ -193,7 +202,7 @@ class CoerceArgumentsTests(SimpleTestCase):
             coerce_arguments(tool, ["a"])
 
     def test_from_strings(self):
-        def resource(ctx, id: int, day: datetime.date | None = None, name: str = ""):
+        def resource(ctx, id: int, day: Optional[datetime.date] = None, name: str = ""):
             pass
 
         self.assertEqual(

@@ -15,6 +15,8 @@ from .errors import InvalidArguments
 
 EMPTY = inspect.Parameter.empty
 _VARIADIC = (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD)
+# ``X | Y`` unions; Python 3.9 has none.
+_UNION_TYPE = getattr(types, "UnionType", Union)
 
 _SIMPLE = {
     str: {"type": "string"},
@@ -81,7 +83,7 @@ def split_annotated(annotation):
 
 def _is_union(annotation):
     origin = get_origin(annotation)
-    return origin is Union or origin is types.UnionType
+    return origin is Union or origin is _UNION_TYPE
 
 
 def annotation_schema(annotation):

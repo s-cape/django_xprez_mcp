@@ -6,7 +6,7 @@ import decimal
 import inspect
 import uuid
 from functools import cached_property
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, Optional
 
 from django.core.exceptions import (
     FieldDoesNotExist,
@@ -71,7 +71,7 @@ def field_annotation(field):
     else:
         annotation = _base_annotation(field)
     if field.null and annotation is not Any:
-        annotation = annotation | None
+        annotation = Optional[annotation]
     return annotation
 
 
@@ -740,10 +740,10 @@ class ModelProvider(Provider):
             params = []
             if self.has_search():
                 params.append(
-                    ("query", Annotated[str | None, "Free text search"], None)
+                    ("query", Annotated[Optional[str], "Free text search"], None)
                 )
             for name, spec in self.get_filters().items():
-                params.append((name, self.filter_annotation(spec) | None, None))
+                params.append((name, Optional[self.filter_annotation(spec)], None))
             if self.ordering_fields:
                 options = []
                 for field in self.ordering_fields:
@@ -751,14 +751,14 @@ class ModelProvider(Provider):
                 params.append(
                     (
                         "ordering",
-                        Annotated[Literal[tuple(options)] | None, "Sort order"],
+                        Annotated[Optional[Literal[tuple(options)]], "Sort order"],
                         None,
                     )
                 )
             limit = f"Results per page, 1-{self.max_page_size}"
             params.append(("limit", Annotated[int, limit], self.page_size))
             cursor = "next_cursor from the previous page"
-            params.append(("cursor", Annotated[str | None, cursor], None))
+            params.append(("cursor", Annotated[Optional[str], cursor], None))
             return params
         if action in ("get", "delete"):
             return [lookup]

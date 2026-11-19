@@ -1,7 +1,7 @@
 """Generic mode: a fixed set of tools covering every ``ModelProvider``."""
 
 import copy
-from typing import Annotated, Any
+from typing import Annotated, Any, Optional, Union
 
 from django.core.exceptions import ImproperlyConfigured
 
@@ -11,7 +11,7 @@ from .items import Item, ToolSpec
 from .model_provider import HINTS
 
 MODEL = Annotated[str, "A model from models_list"]
-ID = Annotated[str | int, "The record's lookup value (see models_list)"]
+ID = Annotated[Union[str, int], "The record's lookup value (see models_list)"]
 
 # The functions only carry the signatures and descriptions; GenericToolSpec.run
 # does the work.
@@ -25,10 +25,10 @@ def models_list(ctx):
 def records_search(
     ctx,
     model: MODEL,
-    query: Annotated[str | None, "Free text search"] = None,
-    filters: Annotated[dict[str, Any] | None, "Filters from models_list"] = None,
-    limit: Annotated[int | None, "Results per page"] = None,
-    cursor: Annotated[str | None, "next_cursor from the previous page"] = None,
+    query: Annotated[Optional[str], "Free text search"] = None,
+    filters: Annotated[Optional[dict[str, Any]], "Filters from models_list"] = None,
+    limit: Annotated[Optional[int], "Results per page"] = None,
+    cursor: Annotated[Optional[str], "next_cursor from the previous page"] = None,
 ):
     """Search or list records of one model. Pass next_cursor as cursor for the
     next page."""
@@ -56,13 +56,13 @@ def record_action(
     ctx,
     model: MODEL,
     action: Annotated[str, "An admin action from models_list"],
-    ids: Annotated[list[str | int], "Lookup values of the records"],
+    ids: Annotated[list[Union[str, int]], "Lookup values of the records"],
 ):
     """Run an admin action on records. models_list shows the actions."""
 
 
 INLINE = Annotated[str, "An inline from models_list"]
-ROW = Annotated[str | int, "The inline row's id"]
+ROW = Annotated[Union[str, int], "The inline row's id"]
 
 
 def record_inline_list(
@@ -70,8 +70,8 @@ def record_inline_list(
     model: MODEL,
     parent: ID,
     inline: INLINE,
-    limit: Annotated[int | None, "Results per page"] = None,
-    cursor: Annotated[str | None, "next_cursor from the previous page"] = None,
+    limit: Annotated[Optional[int], "Results per page"] = None,
+    cursor: Annotated[Optional[str], "next_cursor from the previous page"] = None,
 ):
     """List the rows of a record's inline. Pass next_cursor as cursor for the
     next page."""
