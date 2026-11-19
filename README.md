@@ -7,6 +7,9 @@ filtered by the calling user's permissions.
 Early development: phases 1 (core), 2 (models) and 3 (admin). See
 [docs/design.md](docs/design.md) for the full design and roadmap.
 
+Guides: [getting started](docs/getting-started.md),
+[permissions](docs/permissions.md), [security checklist](docs/security.md).
+
 ```python
 # settings.py
 INSTALLED_APPS = [..., "xprez_mcp", "xprez_mcp.contrib.tokens"]

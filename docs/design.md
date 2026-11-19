@@ -693,6 +693,53 @@ servers that share a name, including two unnamed ones falling back to `NAME`.
   write tools held back by `ALLOW_WRITES` and admin entries (`list_filter`,
   inlines) that `AdminProvider` could not map.
 
+## Hardening *(planned)*
+
+Agents call tools in loops, and a server over the whole admin reaches every
+large table. These guardrails bound the cost of one caller; they are not
+tied to a phase.
+
+### Query cost
+
+Today `limit` is bounded by `max_page_size`, but every `list` page runs
+`COUNT(*)`, the cursor is an unbounded offset, and search is `icontains` on
+every `search_fields` entry.
+
+- `max_offset` on `ModelProvider` (default from the setting): a cursor past
+  it is an `InvalidArguments` asking the agent to narrow the query.
+- `count`: `True` (today), `False` (no count; `next_cursor` comes from
+  fetching `limit + 1` rows) or a callable for an estimate. `AdminProvider`
+  follows `show_full_result_count`.
+- A per-call query budget: `XPREZ_MCP["QUERY_TIMEOUT"]` (seconds, default
+  `None`) sets the database statement timeout for the call where the backend
+  supports it (on PostgreSQL the call runs in a transaction with
+  `SET LOCAL statement_timeout`), so a slow search fails as a readable error instead of tying
+  up a worker. Other backends ignore it; a system check warns.
+- Result size: `XPREZ_MCP["MAX_RESULT_BYTES"]` caps an encoded tool result;
+  a larger one is an error telling the agent to page or select fewer fields.
+
+### Rate limiting
+
+- `XPREZ_MCP["RATE_LIMIT"]` / `MCPServer(rate_limit=...)`: `"<n>/<s|m|h>"`
+  per user, or a callable `(ctx) -> str | None` for per-user or per-token
+  limits. Counted in Django's cache (`RATE_LIMIT_CACHE`, default `"default"`),
+  so it needs a shared cache when several processes serve the endpoint.
+- Counted per `tools/call` and `resources/read`; `*/list`, `prompts/get`
+  and `completion/complete` are not counted.
+- Over the limit: HTTP `429` with `Retry-After`, and a JSON-RPC error, so
+  clients that only read the body still see it.
+- Optional `write_rate_limit` for non-read-only tools.
+
+### Coverage and review
+
+- CI measures coverage (`coverage run -m django test ...`) and reports it on
+  pull requests; the threshold starts at the measured value and only rises.
+- Uncovered branches in `server.py`, `model_provider.py` and
+  `admin_provider.py` get tests or are removed.
+- Before 1.0, those three modules are reviewed line by line for dead code,
+  error mapping and query counts (`assertNumQueries` on `list`, `get` and the
+  inline tools), and split where a module has more than one concern.
+
 ## Phases
 
 1. **Core** (in progress): `MCPServer`, `Provider`, `@tool` / `@resource` /
