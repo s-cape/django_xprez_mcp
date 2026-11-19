@@ -2,7 +2,7 @@ from django.contrib.auth.models import Group
 from django.core.exceptions import ImproperlyConfigured
 from django.test import SimpleTestCase, override_settings
 
-from mcpkit import (
+from xprez_mcp import (
     AlreadyRegistered,
     MCPServer,
     NotRegistered,
@@ -12,7 +12,7 @@ from mcpkit import (
     resource,
     tool,
 )
-from mcpkit.context import CallContext
+from xprez_mcp.context import CallContext
 
 
 class Base(Provider):
@@ -192,13 +192,13 @@ class ExcludeTests(SimpleTestCase):
         server = MCPServer("t")
         server.register(Base)
         self.assertEqual(len(names(server)), 2)
-        with override_settings(MCPKIT={"EXCLUDE": ["base_one"]}):
+        with override_settings(XPREZ_MCP={"EXCLUDE": ["base_one"]}):
             self.assertEqual(names(server), ["base_two"])
         self.assertEqual(len(names(server)), 2)
 
     def test_exclude_apps(self):
         self.assertIn("notes_search", mcp.catalog["tool"])
-        with override_settings(MCPKIT={"EXCLUDE_APPS": ["testapp"]}):
+        with override_settings(XPREZ_MCP={"EXCLUDE_APPS": ["testapp"]}):
             self.assertEqual(names(mcp), [])
 
     def test_default_settings_exclude(self):
@@ -211,7 +211,7 @@ class AutodiscoverTests(SimpleTestCase):
         self.assertIn("ping", mcp.catalog["tool"])
         item = mcp.catalog["tool"]["notes_search"]
         self.assertEqual(item.app_label, "testapp")
-        self.assertEqual(item.source, "mcpkit.tests.testapp.mcp.NotesProvider")
+        self.assertEqual(item.source, "xprez_mcp.tests.testapp.mcp.NotesProvider")
 
     def test_async_rejected(self):
         with self.assertRaises(ImproperlyConfigured):

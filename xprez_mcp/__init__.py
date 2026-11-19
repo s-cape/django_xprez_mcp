@@ -1,5 +1,7 @@
 """Admin-style MCP servers for Django."""
 
+from importlib.metadata import PackageNotFoundError, version
+
 from .context import CallContext
 from .decorators import prompt, resource, tool
 from .errors import (
@@ -14,7 +16,10 @@ from .providers import Provider
 from .results import ToolResult
 from .server import MCPServer, mcp
 
-__version__ = "0.1.0.dev0"
+try:
+    __version__ = version("django-xprez-mcp")
+except PackageNotFoundError:  # running from a source tree that isn't installed
+    __version__ = "0.0.0"
 
 __all__ = [
     "AlreadyRegistered",

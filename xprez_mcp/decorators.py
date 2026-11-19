@@ -1,6 +1,6 @@
 from .items import PromptSpec, ResourceSpec, ToolSpec
 
-SPEC_ATTRIBUTE = "_mcpkit_spec"
+SPEC_ATTRIBUTE = "_xprez_mcp_spec"
 
 
 def _attach(func, spec):

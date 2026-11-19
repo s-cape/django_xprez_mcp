@@ -19,7 +19,7 @@ from .errors import (
 )
 from .results import dumps
 
-logger = logging.getLogger("mcpkit")
+logger = logging.getLogger("xprez_mcp")
 
 
 def rpc_response(message_id, result=None, error=None):

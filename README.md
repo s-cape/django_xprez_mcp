@@ -1,4 +1,4 @@
-# django-mcpkit
+# django-xprez-mcp
 
 Admin-style MCP servers for Django. Register providers, models, admin classes
 and plain functions on a server; they become MCP tools, resources and prompts,
@@ -9,18 +9,18 @@ for the full design and roadmap.
 
 ```python
 # settings.py
-INSTALLED_APPS = [..., "mcpkit"]
-MCPKIT = {"TOKEN_RESOLVER": "myapp.tokens.resolve"}  # (request, token) -> user | None
+INSTALLED_APPS = [..., "xprez_mcp"]
+XPREZ_MCP = {"TOKEN_RESOLVER": "myapp.tokens.resolve"}  # (request, token) -> user | None
 
 # urls.py
-from mcpkit import mcp
+from xprez_mcp import mcp
 
 urlpatterns = [path("mcp/", mcp.urls)]
 ```
 
 ```python
 # myapp/mcp.py: discovered automatically, like admin.py
-from mcpkit import Provider, mcp, prompt, resource, tool
+from xprez_mcp import Provider, mcp, prompt, resource, tool
 
 
 @mcp.register
@@ -53,6 +53,6 @@ def ping(ctx) -> str:
 ```bash
 python3 -m venv .venv
 .venv/bin/pip install -e ".[dev]"
-.venv/bin/python -m django test mcpkit.tests --settings=mcpkit.tests.settings
+.venv/bin/python -m django test xprez_mcp.tests --settings=xprez_mcp.tests.settings
 .venv/bin/black --check .
 ```

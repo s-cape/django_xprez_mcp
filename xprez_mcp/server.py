@@ -33,7 +33,7 @@ from .items import Item
 from .providers import Provider
 from .schema import coerce_strings
 
-logger = logging.getLogger("mcpkit")
+logger = logging.getLogger("xprez_mcp")
 
 # Newest first. A new spec version has to be reviewed and added by hand.
 PROTOCOL_VERSIONS = ("2025-06-18", "2025-03-26", "2024-11-05")
@@ -45,7 +45,7 @@ _servers = weakref.WeakSet()
 
 @receiver(setting_changed)
 def _settings_changed(setting, **kwargs):
-    if setting == "MCPKIT":
+    if setting == "XPREZ_MCP":
         for server in list(_servers):
             server.clear_cache()
 
@@ -239,7 +239,7 @@ class MCPServer:
 
     @property
     def urls(self):
-        return [path("", self.get_view(), name="endpoint")], "mcpkit", self.name
+        return [path("", self.get_view(), name="endpoint")], "xprez_mcp", self.name
 
     def get_view(self):
         if self._view is None:

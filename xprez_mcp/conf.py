@@ -5,7 +5,7 @@ DEFAULTS = {
     "VERSION": "0.0.0",
     "AUTODISCOVER": True,
     "AUTODISCOVER_MODULE": "mcp",
-    "AUTHENTICATION": ["mcpkit.auth.bearer_token"],
+    "AUTHENTICATION": ["xprez_mcp.auth.bearer_token"],
     "TOKEN_RESOLVER": None,
     "ALLOWED_ORIGINS": [],
     "EXCLUDE": [],
@@ -14,4 +14,4 @@ DEFAULTS = {
 
 
 def get(key):
-    return getattr(settings, "MCPKIT", {}).get(key, DEFAULTS[key])
+    return getattr(settings, "XPREZ_MCP", {}).get(key, DEFAULTS[key])

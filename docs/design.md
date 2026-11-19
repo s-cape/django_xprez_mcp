@@ -1,4 +1,4 @@
-# django-mcpkit design
+# django-xprez-mcp design
 
 Admin-style MCP servers for Django. You register providers, models, admin
 classes and plain functions on a server, and they become MCP tools, resources
@@ -34,7 +34,7 @@ that does not exist yet.
 
 | Concept | What it is |
 |---|---|
-| `MCPServer` | A registry plus an HTTP endpoint. `mcpkit.mcp` is the default instance; create more for curated audiences. |
+| `MCPServer` | A registry plus an HTTP endpoint. `xprez_mcp.mcp` is the default instance; create more for curated audiences. |
 | `Provider` | A class whose `@tool`, `@resource` and `@prompt` methods are exposed. Registered under a key (a provider class or a model). |
 | `ModelProvider` *(planned)* | A provider generated from a model: list/get/create/update/delete, resources per object. |
 | `AdminProvider` *(planned)* | A provider generated from a `ModelAdmin`, reusing its permissions, queryset, search, filters and form. |
@@ -46,7 +46,7 @@ that does not exist yet.
 ### Standalone functions
 
 ```python
-from mcpkit import mcp
+from xprez_mcp import mcp
 
 @mcp.tool(read_only=True)
 def ping(ctx) -> str:
@@ -66,7 +66,7 @@ The first parameter (after `self` on methods) always receives the
 ```python
 from typing import Annotated, Literal
 
-from mcpkit import Provider, ToolError, mcp, prompt, resource, tool
+from xprez_mcp import Provider, ToolError, mcp, prompt, resource, tool
 
 
 @mcp.register
@@ -125,7 +125,7 @@ override again.
 ### Models *(planned, phase 2)*
 
 ```python
-from mcpkit import ModelProvider, mcp, tool
+from xprez_mcp import ModelProvider, mcp, tool
 
 @mcp.register(Client)
 class ClientProvider(ModelProvider):
@@ -154,7 +154,7 @@ projects with a service layer keep it.
 
 ```python
 from django.contrib import admin
-from mcpkit import AdminProvider, mcp
+from xprez_mcp import AdminProvider, mcp
 
 mcp.register(Client, AdminProvider.from_admin(ClientAdmin, actions=["list", "get", "update"]))
 
@@ -186,7 +186,7 @@ mcp.unregister_prompt("tags_cleanup")
 
 ```python
 # settings.py: applied when the catalog is built, so app order does not matter
-MCPKIT = {
+XPREZ_MCP = {
     "EXCLUDE": ["tags_delete", "filer_*"],  # glob on tool/prompt names and resource URIs
     "EXCLUDE_APPS": ["some_noisy_lib"],
 }
@@ -197,7 +197,7 @@ Policy for third-party writes (opt-in vs. opt-out) is open; see open questions.
 ### Several servers
 
 ```python
-from mcpkit import MCPServer
+from xprez_mcp import MCPServer
 
 sales_mcp = MCPServer(name="crm-sales", instructions="...")
 sales_mcp.register(ClientProvider)
@@ -263,19 +263,19 @@ converted with the same type hints.
 - Protocol versions: `2025-06-18`, `2025-03-26`, `2024-11-05`. A newer spec
   version is reviewed and added by hand.
 - Requests must be `application/json`. A browser `Origin` must match the host
-  or `MCPKIT["ALLOWED_ORIGINS"]` (DNS rebinding protection). Together these
+  or `XPREZ_MCP["ALLOWED_ORIGINS"]` (DNS rebinding protection). Together these
   also stop cross-site form posts when session auth is enabled.
 
 ## Authentication
 
-`MCPKIT["AUTHENTICATION"]` (or `MCPServer(authentication=[...])`) is a list
+`XPREZ_MCP["AUTHENTICATION"]` (or `MCPServer(authentication=[...])`) is a list
 of callables `backend(request) -> user | None`, tried in order. A backend
 raises `AuthenticationFailed` to reject a request outright.
 
-- `mcpkit.auth.bearer_token`: reads `Authorization: Bearer <token>` and calls
-  `MCPKIT["TOKEN_RESOLVER"]` (`resolver(request, token) -> user | None`).
+- `xprez_mcp.auth.bearer_token`: reads `Authorization: Bearer <token>` and calls
+  `XPREZ_MCP["TOKEN_RESOLVER"]` (`resolver(request, token) -> user | None`).
   Projects keep their own token models.
-- `mcpkit.auth.session`: `request.user` from the session.
+- `xprez_mcp.auth.session`: `request.user` from the session.
 
 Without a user the endpoint answers `401` with `WWW-Authenticate: Bearer`,
 unless the server was created with `allow_anonymous=True`.
@@ -285,12 +285,12 @@ OAuth (protected resource metadata, RFC 9728) is planned for later.
 ## Settings
 
 ```python
-MCPKIT = {
+XPREZ_MCP = {
     "NAME": "django",              # serverInfo.name of the default server
     "VERSION": "0.0.0",
     "AUTODISCOVER": True,
     "AUTODISCOVER_MODULE": "mcp",
-    "AUTHENTICATION": ["mcpkit.auth.bearer_token"],
+    "AUTHENTICATION": ["xprez_mcp.auth.bearer_token"],
     "TOKEN_RESOLVER": None,        # "myapp.tokens.resolve"
     "ALLOWED_ORIGINS": [],
     "EXCLUDE": [],

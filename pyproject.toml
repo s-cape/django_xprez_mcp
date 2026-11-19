@@ -1,13 +1,14 @@
 [build-system]
-requires = ["setuptools>=61.0", "wheel"]
+requires = ["setuptools>=77", "setuptools-scm>=8"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "django-mcpkit"
-version = "0.1.0.dev0"
+name = "django-xprez-mcp"
+dynamic = ["version"]
 description = "Admin-style MCP servers for Django: register providers, models, admin classes and functions as MCP tools, resources and prompts."
 readme = "README.md"
-license = { text = "BSD-3-Clause" }
+license = "BSD-3-Clause"
+license-files = ["LICENSE"]
 requires-python = ">=3.10"
 dependencies = [
     "Django>=4.2",
@@ -17,8 +18,16 @@ classifiers = [
     "Framework :: Django :: 4.2",
     "Framework :: Django :: 5.2",
     "Programming Language :: Python :: 3",
-    "License :: OSI Approved :: BSD License",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
 ]
+
+[project.urls]
+Homepage = "https://github.com/s-cape/django_xprez_mcp"
+Documentation = "https://github.com/s-cape/django_xprez_mcp/blob/main/docs/design.md"
+Issues = "https://github.com/s-cape/django_xprez_mcp/issues"
 
 [project.optional-dependencies]
 dev = [
@@ -27,7 +36,11 @@ dev = [
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["mcpkit*"]
+include = ["xprez_mcp*"]
+
+# Version comes from the latest git tag (vX.Y.Z); untagged commits get a
+# .devN version.
+[tool.setuptools_scm]
 
 [tool.black]
 line-length = 88

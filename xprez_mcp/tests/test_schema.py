@@ -7,8 +7,8 @@ from typing import Annotated, Any, Literal
 from django.core.exceptions import ImproperlyConfigured
 from django.test import SimpleTestCase
 
-from mcpkit.errors import InvalidArguments
-from mcpkit.schema import (
+from xprez_mcp.errors import InvalidArguments
+from xprez_mcp.schema import (
     annotation_schema,
     coerce_arguments,
     coerce_strings,

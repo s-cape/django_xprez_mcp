@@ -7,8 +7,8 @@ from typing import Annotated, Literal
 from django.core.exceptions import PermissionDenied, ValidationError
 from django.http import Http404
 
-from mcpkit import Provider, ToolError, mcp, prompt, resource, tool
-from mcpkit.results import assistant, user
+from xprez_mcp import Provider, ToolError, mcp, prompt, resource, tool
+from xprez_mcp.results import assistant, user
 
 NOTES = {1: "First note", 2: "Second note"}
 
@@ -133,7 +133,7 @@ def whoami(ctx):
 
 @mcp.tool
 def hidden_tool(ctx):
-    """Excluded by MCPKIT["EXCLUDE"]."""
+    """Excluded by XPREZ_MCP["EXCLUDE"]."""
     return "hidden"
 
 

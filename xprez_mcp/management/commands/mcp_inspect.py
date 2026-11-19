@@ -2,7 +2,7 @@ from django.contrib.auth import get_user_model
 from django.core.management.base import BaseCommand, CommandError
 from django.utils.module_loading import import_string
 
-from mcpkit.server import KINDS
+from xprez_mcp.server import KINDS
 
 
 class Command(BaseCommand):
@@ -10,7 +10,7 @@ class Command(BaseCommand):
 
     def add_arguments(self, parser):
         parser.add_argument(
-            "--server", default="mcpkit.mcp", help="Dotted path to an MCPServer."
+            "--server", default="xprez_mcp.mcp", help="Dotted path to an MCPServer."
         )
         parser.add_argument(
             "--user", help="Username; marks the items this user cannot see."

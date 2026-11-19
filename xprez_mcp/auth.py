@@ -21,7 +21,7 @@ def session(request):
 class BearerToken:
     """``Authorization: Bearer <token>`` resolved by ``resolver(request, token)``.
 
-    Without an explicit resolver, ``MCPKIT["TOKEN_RESOLVER"]`` is used.
+    Without an explicit resolver, ``XPREZ_MCP["TOKEN_RESOLVER"]`` is used.
     """
 
     def __init__(self, resolver=None):
@@ -33,7 +33,7 @@ class BearerToken:
         path = conf.get("TOKEN_RESOLVER")
         if not path:
             raise ImproperlyConfigured(
-                'Bearer authentication needs MCPKIT["TOKEN_RESOLVER"].'
+                'Bearer authentication needs XPREZ_MCP["TOKEN_RESOLVER"].'
             )
         return import_string(path)
 

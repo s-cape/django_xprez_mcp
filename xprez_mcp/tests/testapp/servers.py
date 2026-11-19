@@ -1,6 +1,6 @@
 """Extra servers: a curated one and one without authentication."""
 
-from mcpkit import MCPServer, auth
+from xprez_mcp import MCPServer, auth
 
 from .mcp import StaffProvider
 

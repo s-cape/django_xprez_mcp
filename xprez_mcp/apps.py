@@ -4,9 +4,9 @@ from django.utils.module_loading import autodiscover_modules
 from . import conf
 
 
-class MCPKitConfig(AppConfig):
-    name = "mcpkit"
-    verbose_name = "MCP kit"
+class XprezMCPConfig(AppConfig):
+    name = "xprez_mcp"
+    verbose_name = "Xprez MCP"
 
     def ready(self):
         if conf.get("AUTODISCOVER"):

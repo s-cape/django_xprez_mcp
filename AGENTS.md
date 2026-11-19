@@ -4,7 +4,7 @@ Instructions for coding agents working in this repository.
 
 ## Repository context
 
-- Reusable Django library `mcpkit` (PyPI `django-mcpkit`): admin-style MCP servers.
+- Reusable Django library `xprez_mcp` (PyPI `django-xprez-mcp`): admin-style MCP servers.
 - `docs/design.md` is the source of truth for the API and the roadmap. Update it
   when behaviour or public API changes.
 - The library knows nothing about the projects that use it: never name them
@@ -25,6 +25,6 @@ Instructions for coding agents working in this repository.
 ## Tests
 
 ```bash
-.venv/bin/python -m django test mcpkit.tests --settings=mcpkit.tests.settings
+.venv/bin/python -m django test xprez_mcp.tests --settings=xprez_mcp.tests.settings
 .venv/bin/black --check .
 ```

@@ -81,8 +81,8 @@ class TransportTests(MCPTestCase):
         response = self.post(message, HTTP_ORIGIN="http://testserver")
         self.assertEqual(response.status_code, 200)
         with override_settings(
-            MCPKIT={
-                "TOKEN_RESOLVER": "mcpkit.tests.testapp.tokens.resolve",
+            XPREZ_MCP={
+                "TOKEN_RESOLVER": "xprez_mcp.tests.testapp.tokens.resolve",
                 "ALLOWED_ORIGINS": ["https://app.example"],
             }
         ):
@@ -417,7 +417,7 @@ class InspectCommandTests(MCPTestCase):
         call_command("mcp_inspect", stdout=out)
         output = out.getvalue()
         self.assertIn("notes_search", output)
-        self.assertIn("mcpkit.tests.testapp.mcp.NotesProvider", output)
+        self.assertIn("xprez_mcp.tests.testapp.mcp.NotesProvider", output)
         self.assertIn("notes://{id}", output)
         self.assertNotIn("(hidden)", output)
 
