@@ -39,15 +39,17 @@ from .model_provider import (
     form_error,
     is_writable,
     make_function,
+    signature_function,
     write_parameter,
 )
 
-INLINE_OPERATIONS = ("create", "update", "delete")
 INLINE_PERMISSIONS = {
     "create": "has_add_permission",
     "update": "has_change_permission",
     "delete": "has_delete_permission",
 }
+INLINE_OPERATIONS = tuple(INLINE_PERMISSIONS)
+INLINE_ACTIONS = {f"inline_{operation}": operation for operation in INLINE_PERMISSIONS}
 _PLAIN = (
     str,
     int,
@@ -108,7 +110,7 @@ class AdminProvider(ModelProvider):
 
     def __init__(self, server, model=None):
         super().__init__(server, model=model)
-        self.inline_specs  # resolves inlines now, filling unsupported
+        self.exposed_inlines  # resolves inlines now, filling unsupported
 
     # --- configuration ------------------------------------------------------
 
@@ -330,7 +332,7 @@ class AdminProvider(ModelProvider):
             request
         ) and self.model_admin.has_module_permission(request)
 
-    def admin_permission(self, request, action, obj=None):
+    def has_admin_permission(self, request, action, obj=None):
         model_admin = self.model_admin
         if action in ("list", "get"):
             return model_admin.has_view_or_change_permission(request, obj)
@@ -343,27 +345,30 @@ class AdminProvider(ModelProvider):
         return False
 
     def has_action_permission(self, ctx, action):
-        if action == "action":
+        if action == "admin_action":
             return self.writes_allowed() and bool(self.available_admin_actions(ctx))
         if action == "inline_list":
-            return bool(self.inline_specs) and self.has_action_permission(ctx, "get")
+            return bool(self.exposed_inlines) and self.has_action_permission(ctx, "get")
         if action.startswith("inline_"):
-            return bool(self.inline_specs) and self.has_action_permission(ctx, "update")
+            return bool(self.exposed_inlines) and self.has_action_permission(
+                ctx, "update"
+            )
         if not super().has_action_permission(ctx, action):
             return False
-        return self.admin_permission(self.admin_request(ctx), action)
+        else:
+            return self.has_admin_permission(self.admin_request(ctx), action)
 
     def has_object_permission(self, ctx, action, instance):
-        return self.admin_permission(self.admin_request(ctx), action, instance)
+        return self.has_admin_permission(self.admin_request(ctx), action, instance)
 
     def generic_actions(self):
         found = set(self.actions)
         if self.admin_actions:
-            found.add("action")
-        if self.inline_specs and "get" in self.actions:
+            found.add("admin_action")
+        if self.exposed_inlines and "get" in self.actions:
             found.add("inline_list")
-        if self.inline_specs and "update" in self.actions:
-            found.update(f"inline_{operation}" for operation in INLINE_OPERATIONS)
+        if self.exposed_inlines and "update" in self.actions:
+            found.update(INLINE_ACTIONS.keys())
         return found
 
     # --- reads --------------------------------------------------------------
@@ -402,19 +407,24 @@ class AdminProvider(ModelProvider):
         ordering = self.model_admin.get_ordering(self.admin_request(ctx))
         return list(ordering) if ordering else self.get_ordering()
 
-    def field_value(self, instance, name, model_admin=None, callables=None):
-        model_admin = model_admin or self.model_admin
+    def field_value(self, instance, name, callables=None):
         if callables is None:
             callables = self.display_callables
         if name == "display":
             return str(instance)
         # errors the admin shows as its empty value: the changelist catches
         # ObjectDoesNotExist, read-only fields AttributeError and ValueError too
-        if model_admin is self.model_admin and name in callables:
+        if name in callables:
             try:
                 return plain(callables[name](instance))
             except ObjectDoesNotExist:
                 return None
+        return self._admin_field_value(instance, name, self.model_admin)
+
+    def inline_field_value(self, inline, instance, name):
+        return self._admin_field_value(instance, name, inline)
+
+    def _admin_field_value(self, instance, name, model_admin):
         try:
             instance._meta.get_field(name)
         except FieldDoesNotExist:
@@ -428,14 +438,11 @@ class AdminProvider(ModelProvider):
         # field types with their own value classes (timezones, money, ...)
         return plain(super().field_value(instance, name))
 
-    def detail_names(self, model_admin, request, obj, exclude=()):
-        if model_admin is self.model_admin:
-            names = [self.lookup_name]
-        else:  # an inline: obj is the parent, the rows are the inline's model
-            names = [model_admin.model._meta.pk.name]
-        exclude = {*exclude, *self.get_hidden_fields(model_admin)}
-        for name in flatten(model_admin.get_fields(request, obj)):
-            if name not in names and name not in exclude:
+    def detail_names(self, request, obj):
+        names = [self.lookup_name]
+        hidden = self.get_hidden_fields(self.model_admin)
+        for name in flatten(self.model_admin.get_fields(request, obj)):
+            if name not in names and name not in hidden:
                 names.append(name)
         return names
 
@@ -455,7 +462,7 @@ class AdminProvider(ModelProvider):
         if many or not detail or self.serializer is not None or configured:
             return super().serialize(ctx, value, many=many, detail=detail)
         request = self.admin_request(ctx)
-        names = self.detail_names(self.model_admin, request, value)
+        names = self.detail_names(request, value)
         data = {name: self.field_value(value, name) for name in names}
         inlines = self.serialize_inlines(ctx, request, value)
         if inlines:
@@ -572,7 +579,7 @@ class AdminProvider(ModelProvider):
         except (TypeError, KeyError, ValueError):
             return str(description)
 
-    def run_action(self, ctx, action, ids):
+    def run_admin_action(self, ctx, action, ids):
         available = self.available_admin_actions(ctx)
         if action not in available:
             raise InvalidArguments(
@@ -595,7 +602,7 @@ class AdminProvider(ModelProvider):
     # --- inlines ------------------------------------------------------------
 
     @cached_property
-    def inline_specs(self):
+    def exposed_inlines(self):
         """``{name: (InlineModelAdmin class, foreign key)}``."""
         classes = self.model_admin.inlines if self.inlines is None else self.inlines
         found = {}
@@ -615,22 +622,22 @@ class AdminProvider(ModelProvider):
             found[name] = (inline_class, fk)
         return found
 
-    def get_inline_spec(self, name):
+    def get_exposed_inline(self, name):
         """``(InlineModelAdmin class, foreign key)`` for ``name``."""
         try:
-            return self.inline_specs[name]
+            return self.exposed_inlines[name]
         except KeyError:
             raise InvalidArguments(
-                f"Unknown inline {name!r}. Available: {sorted(self.inline_specs)}."
+                f"Unknown inline {name!r}. Available: {sorted(self.exposed_inlines)}."
             ) from None
 
     def static_inline(self, name):
-        inline_class, _ = self.get_inline_spec(name)
+        inline_class, _ = self.get_exposed_inline(name)
         return inline_class(self.model, self.site)
 
     def get_inline(self, request, parent, name):
         """``(FormSet, inline, prefix, fk)`` as the change form builds them."""
-        inline_class, fk = self.get_inline_spec(name)
+        inline_class, fk = self.get_exposed_inline(name)
         prefixes = {}
         for formset_class, inline in self.model_admin.get_formsets_with_inlines(
             request, parent
@@ -650,13 +657,32 @@ class AdminProvider(ModelProvider):
         ordering = inline.get_ordering(request) or inline.model._meta.ordering
         return queryset.order_by(*(list(ordering or []) + ["pk"]))
 
+    def inline_field_names(self, inline, fk, request=None, parent=None, editable=False):
+        """Inline fields, minus hidden ones and the foreign key to the parent."""
+        if request is None:
+            fields, readonly = self.static_fields(inline)
+        else:
+            fields = flatten(inline.get_fields(request, parent))
+            readonly = inline.get_readonly_fields(request, parent)
+        skipped = {*self.get_hidden_fields(inline), fk.name}
+        if editable:
+            skipped.update(readonly)
+        return [name for name in fields if name not in skipped]
+
+    def inline_row_names(self, inline, request, parent, fk):
+        names = [inline.model._meta.pk.name]
+        for name in self.inline_field_names(inline, fk, request, parent):
+            if name not in names:
+                names.append(name)
+        return names
+
     def inline_row(self, request, inline, parent, row, fk):
-        names = self.detail_names(inline, request, parent, exclude=(fk.name,))
-        return {name: self.field_value(row, name, inline) for name in names}
+        names = self.inline_row_names(inline, request, parent, fk)
+        return {name: self.inline_field_value(inline, row, name) for name in names}
 
     def serialize_inlines(self, ctx, request, parent):
         result = {}
-        for name in self.inline_specs:
+        for name in self.exposed_inlines:
             try:
                 _, inline, _, fk = self.get_inline(request, parent, name)
             except PermissionDenied:
@@ -664,7 +690,7 @@ class AdminProvider(ModelProvider):
             rows = self.inline_rows(request, inline, parent, fk)
             page = list(rows[: self.max_page_size])
             self.prefetch_labels(
-                page, self.detail_names(inline, request, parent, exclude=(fk.name,))
+                page, self.inline_row_names(inline, request, parent, fk)
             )
             result[name] = {
                 "results": [
@@ -675,16 +701,8 @@ class AdminProvider(ModelProvider):
         return result
 
     def run(self, ctx, action, /, **kwargs):
-        if action in ("inline_create", "inline_update", "inline_delete"):
-            operation = action.removeprefix("inline_")
-            return self.run_inline(
-                ctx,
-                operation,
-                kwargs.pop("inline"),
-                kwargs.pop("parent"),
-                kwargs.pop("row", None),
-                **kwargs,
-            )
+        if action in INLINE_ACTIONS:
+            return self.run_inline(ctx, INLINE_ACTIONS[action], **kwargs)
         else:
             return super().run(ctx, action, **kwargs)
 
@@ -716,11 +734,10 @@ class AdminProvider(ModelProvider):
         if not allowed(request, parent_obj):
             raise PermissionDenied(f"You cannot {operation} {inline} here.")
         if data:
-            fields = set(flatten(inline_admin.get_fields(request, parent_obj)))
-            fields -= set(inline_admin.get_readonly_fields(request, parent_obj))
-            fields -= self.get_hidden_fields(inline_admin)
-            fields.discard(fk.name)
-            refused = sorted(name for name in data if name not in fields)
+            allowed = self.inline_field_names(
+                inline_admin, fk, request, parent_obj, editable=True
+            )
+            refused = sorted(name for name in data if name not in allowed)
             if refused:
                 raise ToolError(f"You cannot set {', '.join(refused)}.")
 
@@ -807,19 +824,17 @@ class AdminProvider(ModelProvider):
     # --- generated items ----------------------------------------------------
 
     def inline_write_parameters(self, name, partial):
-        inline_class, fk = self.get_inline_spec(name)
+        inline_class, fk = self.get_exposed_inline(name)
         inline = self.static_inline(name)
         opts = inline_class.model._meta
-        fields, readonly = self.static_fields(inline)
-        skipped = {*readonly, *self.get_hidden_fields(inline), fk.name}
         return [
             write_parameter(opts, field, partial)
-            for field in fields
-            if field not in skipped and is_writable(opts, field)
+            for field in self.inline_field_names(inline, fk, editable=True)
+            if is_writable(opts, field)
         ]
 
-    def inline_parameters(self, name, operation, with_lookups=True):
-        inline_class, _ = self.get_inline_spec(name)
+    def inline_parameters(self, name, operation, with_parent=True):
+        inline_class, _ = self.get_exposed_inline(name)
         parent = ("parent", self.lookup_annotation, inspect.Parameter.empty)
         row_annotation = Annotated[
             int | str, f"The {inline_class.model._meta.verbose_name}'s id"
@@ -832,50 +847,39 @@ class AdminProvider(ModelProvider):
                 ("limit", Annotated[int, limit], self.page_size),
                 ("cursor", Annotated[str | None, cursor], None),
             ]
-            return [parent, *params] if with_lookups else params
+            return [parent, *params] if with_parent else params
         if operation == "create":
             params = self.inline_write_parameters(name, partial=False)
-            return [parent, *params] if with_lookups else params
+            return [parent, *params] if with_parent else params
         if operation == "delete":
-            return [parent, row] if with_lookups else []
+            return [parent, row] if with_parent else []
         params = self.inline_write_parameters(name, partial=True)
-        return [parent, row, *params] if with_lookups else params
+        return [parent, row, *params] if with_parent else params
 
-    def argument_function(self, action, inline=None):
-        """The fields of an action, for generic mode. ``inline`` selects an
-        inline write's fields."""
-        if inline is None:
-            return super().argument_function(action)
-        else:
-            operation = action.removeprefix("inline_")
-            return make_function(
-                f"{type(self).__qualname__}.{inline}_{operation}",
-                type(self).__module__,
-                self.inline_parameters(inline, operation, with_lookups=False),
-                lambda provider, ctx, **kwargs: None,
-            )
+    def inline_argument_function(self, inline, operation):
+        """The fields of an inline write, for generic mode's ``data``."""
+        return signature_function(
+            f"{type(self).__qualname__}.{inline}_{operation}",
+            type(self).__module__,
+            self.inline_parameters(inline, operation, with_parent=False),
+        )
 
-    def get_inline_specs(self):
+    def get_inline_tool_specs(self):
         specs = []
         base = self.get_name()
         operations = ["list"]
         if "update" in self.actions:
             operations += INLINE_OPERATIONS
-        for name in self.inline_specs:
-            plural = self.inline_specs[name][0].model._meta.verbose_name_plural
-            singular = self.inline_specs[name][0].model._meta.verbose_name
+        for name in self.exposed_inlines:
+            inline_opts = self.exposed_inlines[name][0].model._meta
+            plural = inline_opts.verbose_name_plural
+            singular = inline_opts.verbose_name
             parent = self.opts.verbose_name
             for operation in operations:
 
                 def impl(provider, ctx, _name=name, _operation=operation, **kwargs):
-                    parent_value = kwargs.pop("parent")
-                    if _operation == "list":
-                        return provider.run_inline_list(
-                            ctx, _name, parent_value, **kwargs
-                        )
-                    row = kwargs.pop("row", None)
-                    return provider.run_inline(
-                        ctx, _operation, _name, parent_value, row, **kwargs
+                    return provider.run(
+                        ctx, f"inline_{_operation}", inline=_name, **kwargs
                     )
 
                 func = make_function(
@@ -918,7 +922,7 @@ class AdminProvider(ModelProvider):
 
         return check
 
-    def get_admin_action_spec(self):
+    def get_admin_action_specs(self):
         if not self.admin_actions:
             return []
         names = tuple(self.admin_actions)
@@ -934,7 +938,9 @@ class AdminProvider(ModelProvider):
                     inspect.Parameter.empty,
                 ),
             ],
-            lambda provider, ctx, action, ids: provider.run_action(ctx, action, ids),
+            lambda provider, ctx, action, ids: provider.run_admin_action(
+                ctx, action, ids
+            ),
         )
         description = (
             f"Run an admin action on {self.opts.verbose_name_plural}. "
@@ -945,14 +951,14 @@ class AdminProvider(ModelProvider):
                 func,
                 name=self.tool_names.get("action") or f"{self.get_name()}_action",
                 description=self.descriptions.get("action", description),
-                permission=self.action_permission("action"),
+                permission=self.action_permission("admin_action"),
             )
         ]
 
     def get_items(self):
         items = super().get_items()
         if self.get_exposure() == "tools":
-            specs = self.get_admin_action_spec() + self.get_inline_specs()
+            specs = self.get_admin_action_specs() + self.get_inline_tool_specs()
             items += [Item(spec, self) for spec in specs]
         return items
 
@@ -960,7 +966,7 @@ class AdminProvider(ModelProvider):
         entry = super().describe(ctx)
         if self.fields_from_admin:
             entry["fields"] = self.list_display(ctx)[0]
-        if self.has_action_permission(ctx, "action"):
+        if self.has_action_permission(ctx, "admin_action"):
             entry["admin_actions"] = {
                 name: self.action_description(name)
                 for name in self.available_admin_actions(ctx)
@@ -968,18 +974,15 @@ class AdminProvider(ModelProvider):
         if self.has_action_permission(ctx, "inline_list"):
             writes = self.has_action_permission(ctx, "inline_update")
             inlines = {}
-            for name in self.inline_specs:
+            for name, (_, fk) in self.exposed_inlines.items():
                 inline_admin = self.static_inline(name)
-                fields, _ = self.static_fields(inline_admin)
-                skipped = {
-                    *self.get_hidden_fields(inline_admin),
-                    self.inline_specs[name][1].name,
-                }
-                inline = {"fields": [field for field in fields if field not in skipped]}
+                inline = {"fields": self.inline_field_names(inline_admin, fk)}
                 if writes:
                     inline["writable"] = {
                         param[0]: schema.annotation_schema(param[1])
-                        for param in self.inline_parameters(name, "update", False)
+                        for param in self.inline_parameters(
+                            name, "update", with_parent=False
+                        )
                     }
                 inlines[name] = inline
             entry["inlines"] = inlines

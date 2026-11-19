@@ -37,7 +37,7 @@ HINTS = {
     "create": {},
     "update": {"idempotent": True},
     "delete": {"destructive": True},
-    "action": {},
+    "admin_action": {},
 }
 
 # Lookups whose value is not of the field's own type.
@@ -163,6 +163,11 @@ def make_function(qualname, module, parameters, impl):
     func.__qualname__ = qualname
     func.__module__ = module
     return func
+
+
+def signature_function(qualname, module, params):
+    """A function with ``params`` as its signature and no body, for validation."""
+    return make_function(qualname, module, params, lambda provider, ctx, **kwargs: None)
 
 
 def _encode_cursor(offset):
@@ -360,7 +365,7 @@ class ModelProvider(Provider):
 
     def writes_allowed(self):
         """Writes of third-party providers need ``ALLOW_WRITES``."""
-        return self.server.writes_allowed(None, self)
+        return self.server.provider_writes_allowed(self)
 
     def has_action_permission(self, ctx, action):
         if action not in self.actions:
@@ -794,11 +799,10 @@ class ModelProvider(Provider):
                 for param in self.action_parameters(action)
                 if action in ("list", "create") or param[0] != self.lookup_argument
             ]
-            functions[action] = make_function(
+            functions[action] = signature_function(
                 f"{type(self).__qualname__}.{action}",
                 type(self).__module__,
                 params,
-                lambda provider, ctx, **kwargs: None,
             )
         return functions[action]
 

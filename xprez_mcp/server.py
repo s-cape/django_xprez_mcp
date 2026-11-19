@@ -323,7 +323,11 @@ class MCPServer:
             if any(fnmatch.fnmatchcase(identifier, pattern) for pattern in exclude):
                 continue
             if item.kind == "tool" and not item.spec.hints["readOnlyHint"]:
-                if not self.writes_allowed(item.module, item.provider):
+                if item.provider is not None:
+                    allowed = self.provider_writes_allowed(item.provider)
+                else:
+                    allowed = self.module_writes_allowed(item.module)
+                if not allowed:
                     self._withheld_writes.append(item)
                     continue
             if item.kind != "resource" and not NAME_PATTERN.match(identifier):
@@ -357,17 +361,20 @@ class MCPServer:
         parts = Path(app_config.path).parts
         return "site-packages" in parts or "dist-packages" in parts
 
-    def writes_allowed(self, module, provider=None):
-        """Whether write tools from ``module`` (or ``provider``) are exposed."""
-        if provider is not None:
-            if provider in self._trusted_providers:
-                return True
-            module = type(provider).__module__
+    def module_writes_allowed(self, module):
+        """Whether write tools defined in ``module`` are exposed."""
         config = apps.get_containing_app_config(module) if module else None
         if config is None or not self.is_third_party(config):
             return True
         patterns = [*conf.get("ALLOW_WRITES"), *self.allow_writes]
         return any(fnmatch.fnmatchcase(config.label, pattern) for pattern in patterns)
+
+    def provider_writes_allowed(self, provider):
+        """Whether write tools of ``provider`` are exposed."""
+        if provider in self._trusted_providers:
+            return True
+        else:
+            return self.module_writes_allowed(type(provider).__module__)
 
     def trust_writes(self, provider):
         """Providers the server built itself (``register_admin``) count as the

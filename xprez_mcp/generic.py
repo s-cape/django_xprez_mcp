@@ -116,7 +116,7 @@ TOOLS = [
     (record_create, "create"),
     (record_update, "update"),
     (record_delete, "delete"),
-    (record_action, "action"),
+    (record_action, "admin_action"),
     (record_inline_list, "inline_list"),
     (record_inline_create, "inline_create"),
     (record_inline_update, "inline_update"),
@@ -161,59 +161,67 @@ class GenericToolSpec(ToolSpec):
             )
         return available[name]
 
-    def run(
-        self, ctx, model=None, id=None, data=None, filters=None, parent=None, **options
-    ):
+    def run(self, ctx, model=None, **kwargs):
         if self.action is None:
             providers = self.available(ctx).values()
             return {"models": [provider.describe(ctx) for provider in providers]}
         else:
             provider = self.resolve(ctx, model)
-            arguments = self.arguments(provider, id, data, filters, parent, options)
-            return provider.run(ctx, self.action, **arguments)
-
-    def arguments(self, provider, id, data, filters, parent, options):
-        if self.action == "list":
-            arguments = dict(filters or {})
-            arguments.update(
-                {key: value for key, value in options.items() if value is not None}
+            return provider.run(
+                ctx, self.action, **self.provider_arguments(provider, kwargs)
             )
-            return parse(provider, "list", arguments)
-        elif self.action == "action":
-            return {
-                "action": options["action"],
-                "ids": [parse_lookup(provider, value) for value in options["ids"]],
-            }
-        elif self.action.startswith("inline_"):
-            return self.inline_arguments(provider, data, parent, options)
-        else:
-            arguments = {}
-            if self.action in ("create", "update"):
-                arguments.update(parse(provider, self.action, data))
-            if self.action != "create":
-                arguments[provider.lookup_argument] = parse_lookup(provider, id)
-            return arguments
 
-    def inline_arguments(self, provider, data, parent, options):
-        inline = options["inline"]
-        provider.get_inline_spec(inline)
-        operation = self.action.removeprefix("inline_")
-        arguments = {"inline": inline, "parent": parse_lookup(provider, parent)}
-        if operation == "list":
+    def provider_arguments(self, provider, kwargs):
+        if self.action == "list":
+            arguments = dict(kwargs.get("filters") or {})
             arguments.update(
                 {
                     key: value
-                    for key, value in options.items()
-                    if key != "inline" and value is not None
+                    for key, value in kwargs.items()
+                    if key != "filters" and value is not None
                 }
             )
-            return arguments
-        else:
-            if operation != "create":
-                arguments["row"] = options["row"]
-            if operation != "delete":
+            return parse(provider, "list", arguments)
+        elif self.action == "admin_action":
+            return {
+                "action": kwargs["action"],
+                "ids": [parse_lookup(provider, value) for value in kwargs["ids"]],
+            }
+        elif self.action.startswith("inline_"):
+            inline = kwargs["inline"]
+            provider.get_exposed_inline(inline)
+            operation = self.action.removeprefix("inline_")
+            arguments = {
+                "inline": inline,
+                "parent": parse_lookup(provider, kwargs["parent"]),
+            }
+            if operation == "list":
                 arguments.update(
-                    parse_function(provider.argument_function(operation, inline), data)
+                    {
+                        key: value
+                        for key, value in kwargs.items()
+                        if key not in ("inline", "parent") and value is not None
+                    }
+                )
+                return arguments
+            else:
+                if operation != "create":
+                    arguments["row"] = kwargs["row"]
+                if operation != "delete":
+                    arguments.update(
+                        parse_function(
+                            provider.inline_argument_function(inline, operation),
+                            kwargs.get("data"),
+                        )
+                    )
+                return arguments
+        else:
+            arguments = {}
+            if self.action in ("create", "update"):
+                arguments.update(parse(provider, self.action, kwargs.get("data")))
+            if self.action != "create":
+                arguments[provider.lookup_argument] = parse_lookup(
+                    provider, kwargs["id"]
                 )
             return arguments
 
