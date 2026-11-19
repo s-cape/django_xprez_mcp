@@ -395,15 +395,15 @@ class AdminConfigurationTests(SimpleTestCase):
 
 
 class InlineOfInheritedParentTests(TestCase):
-    """Inline rows use their own primary key, not the parent's (here tag_ptr)."""
+    """A multi-table child (pk tag_ptr) with grouped fields and an inline."""
 
     def test_get_includes_inline_rows(self):
         class SwatchInline(admin.TabularInline):
             model = Swatch
-            fields = ["hex"]
+            fields = [("hex",)]  # grouped, as on one admin row
 
         class ColoredTagAdmin(admin.ModelAdmin):
-            fields = ["name", "color"]
+            fields = [("name", "color")]
             inlines = [SwatchInline]
 
         local_site = admin.AdminSite(name="inherited")
@@ -417,8 +417,12 @@ class InlineOfInheritedParentTests(TestCase):
         ctx = CallContext(server=server, user=root)
         data = provider.serialize(ctx, ColoredTag.objects.get(pk=tag.pk), detail=True)
         self.assertEqual(data["tag_ptr"], tag.pk)
+        self.assertEqual(data["name"], "red")
         self.assertEqual(data["color"], "#f00")  # a Hue, sent as its string
         self.assertEqual(
             data["inlines"]["swatches"],
             {"results": [{"id": swatch.pk, "hex": "#f00"}], "count": 1},
         )
+        described = provider.describe(ctx)
+        self.assertEqual(described["lookup"], "tag_ptr")
+        self.assertEqual(described["inlines"]["swatches"]["fields"], ["hex"])

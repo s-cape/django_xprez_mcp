@@ -507,6 +507,9 @@ class ModelProvider(Provider):
             if field.auto_created and not field.concrete:  # reverse one-to-one
                 related = getattr(instance, field.get_accessor_name(), None)
                 return getattr(related, "pk", None)
+            if not field.concrete:  # GenericForeignKey: no column, any model
+                related = getattr(instance, name, None)
+                return None if related is None else str(related)
             return getattr(instance, field.attname)
         if isinstance(field, models.FileField):
             file = getattr(instance, name)

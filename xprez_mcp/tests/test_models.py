@@ -10,7 +10,7 @@ from xprez_mcp.context import CallContext
 from xprez_mcp.model_provider import field_annotation
 
 from .test_protocol import MCPTestCase
-from .testapp.models import Client, ColoredTag, Industry, Tag
+from .testapp.models import Client, ColoredTag, Industry, Note, Tag
 
 try:
     import rest_framework  # noqa: F401
@@ -376,6 +376,13 @@ class OneToOneValueTests(TestCase):
         self.assertEqual(parent.field_value(tag, "coloredtag"), colored.pk)
         plain = Tag.objects.create(name="plain")
         self.assertIsNone(parent.field_value(plain, "coloredtag"))
+
+    def test_generic_foreign_key(self):
+        provider = self.provider(Note, ["text", "target"])
+        tag = Tag.objects.create(name="red")
+        note = Note.objects.create(text="hi", target=tag)
+        self.assertEqual(provider.field_value(note, "target"), str(tag))
+        self.assertIsNone(provider.field_value(Note(text="loose"), "target"))
 
 
 class ConfigurationTests(SimpleTestCase):

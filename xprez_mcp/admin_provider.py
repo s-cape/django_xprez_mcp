@@ -14,7 +14,7 @@ from typing import Annotated, Literal
 
 import django
 from django.contrib import admin
-from django.contrib.admin.utils import flatten_fieldsets, lookup_field
+from django.contrib.admin.utils import flatten, flatten_fieldsets, lookup_field
 from django.contrib.auth.models import AnonymousUser
 from django.contrib.messages.storage.base import BaseStorage
 from django.core.exceptions import (
@@ -193,13 +193,13 @@ class AdminProvider(ModelProvider):
         """``(fields, readonly_fields)`` without a user, for schemas."""
         request = self.static_request()
         try:
-            fields = list(model_admin.get_fields(request, obj))
+            fields = flatten(model_admin.get_fields(request, obj))
             readonly = list(model_admin.get_readonly_fields(request, obj))
         except Exception:  # an override that needs a real user
             if model_admin.fieldsets:
                 fields = flatten_fieldsets(model_admin.fieldsets)
             else:
-                fields = list(model_admin.fields or [])
+                fields = flatten(model_admin.fields or [])
             readonly = list(model_admin.readonly_fields)
         return fields, readonly
 
@@ -382,7 +382,7 @@ class AdminProvider(ModelProvider):
             names = [self.lookup_name]
         else:  # an inline: obj is the parent, the rows are the inline's model
             names = [model_admin.model._meta.pk.name]
-        for name in model_admin.get_fields(request, obj):
+        for name in flatten(model_admin.get_fields(request, obj)):
             if name not in names and name not in exclude:
                 names.append(name)
         return names
@@ -640,7 +640,7 @@ class AdminProvider(ModelProvider):
         if not permission(request, parent_obj):
             raise PermissionDenied(f"You cannot {operation} {inline} here.")
         if data:
-            fields = set(inline_admin.get_fields(request, parent_obj))
+            fields = set(flatten(inline_admin.get_fields(request, parent_obj)))
             fields -= set(inline_admin.get_readonly_fields(request, parent_obj))
             fields.discard(fk.name)
             refused = sorted(name for name in data if name not in fields)
@@ -887,6 +887,8 @@ class AdminProvider(ModelProvider):
 
     def describe(self, ctx):
         entry = super().describe(ctx)
+        # the key that holds the lookup in results (user_ptr on a multi-table child)
+        entry["lookup"] = self.lookup_name
         if self.has_action_permission(ctx, "action"):
             entry["admin_actions"] = {
                 name: self.action_description(name)
