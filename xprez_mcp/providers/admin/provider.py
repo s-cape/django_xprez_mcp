@@ -32,13 +32,11 @@ from ...core import schema
 from ...core.items import Item, ToolSpec
 from ...errors import InvalidArguments, ToolError
 from ..fields import file_field, is_writable, write_parameter
+from ..files import check_cleared, closing_stored_files, form_files
 from ..model import (
-    check_cleared,
-    closing_stored_files,
     HINTS,
     ModelProvider,
     form_error,
-    form_files,
     make_function,
     signature_function,
 )
