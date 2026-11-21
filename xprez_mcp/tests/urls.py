@@ -2,6 +2,11 @@ from django.urls import path
 
 from xprez_mcp import mcp
 from xprez_mcp.tests.testapp.admin_servers import admin_generic_mcp, admin_mcp
+from xprez_mcp.tests.testapp.file_servers import (
+    files_admin_mcp,
+    files_generic_mcp,
+    files_mcp,
+)
 from xprez_mcp.tests.testapp.model_servers import generic_mcp, model_mcp
 from xprez_mcp.tests.testapp.servers import open_mcp, staff_mcp
 from xprez_mcp.tests.testapp.token_admin import site as token_site
@@ -17,6 +22,9 @@ urlpatterns = [
     path("generic/mcp/", generic_mcp.urls),
     path("admin/mcp/", admin_mcp.urls),
     path("admin-generic/mcp/", admin_generic_mcp.urls),
+    path("files/mcp/", files_mcp.urls),
+    path("files-generic/mcp/", files_generic_mcp.urls),
+    path("files-admin/mcp/", files_admin_mcp.urls),
 ]
 
 try:

@@ -11,7 +11,8 @@ from typing import Annotated, Any, Literal, Union, get_args, get_origin
 
 from django.core.exceptions import ImproperlyConfigured
 
-from .errors import InvalidArguments
+from ..errors import InvalidArguments
+from .files import FileArgument
 
 EMPTY = inspect.Parameter.empty
 _VARIADIC = (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD)
@@ -103,6 +104,8 @@ def _schema(annotation):
         return dict(_SIMPLE[annotation])
     if isinstance(annotation, type) and issubclass(annotation, enum.Enum):
         return {"enum": [member.value for member in annotation]}
+    if isinstance(annotation, type) and issubclass(annotation, FileArgument):
+        return annotation.json_schema()
     if hasattr(annotation, "model_json_schema"):  # pydantic model
         return annotation.model_json_schema()
     origin, args = get_origin(annotation), get_args(annotation)
@@ -242,6 +245,8 @@ def coerce(annotation, value, path):
             raise _invalid(
                 path, f"one of {[member.value for member in annotation]}"
             ) from None
+    if isinstance(annotation, type) and issubclass(annotation, FileArgument):
+        return annotation.coerce(value, path)
     if hasattr(annotation, "model_validate"):  # pydantic model
         try:
             return annotation.model_validate(value)

@@ -14,7 +14,8 @@ Guides: [getting started](docs/getting-started.md),
 # settings.py
 INSTALLED_APPS = [..., "xprez_mcp", "xprez_mcp.contrib.tokens"]
 XPREZ_MCP = {
-    "PERMISSION": "myapp.use_mcp",  # required: who may use the server at all
+    # required: who may use the server at all
+    "PERMISSION_CALLBACK": "xprez_mcp.permissions.allow_staff",
 }
 
 # urls.py

@@ -1,10 +1,10 @@
 """``ModelProvider``: tools and resources generated from a Django model."""
 
 import base64
-import datetime
-import decimal
 import inspect
-import uuid
+import mimetypes
+import posixpath
+from contextlib import contextmanager
 from functools import cached_property
 from typing import Annotated, Any, Literal, Optional
 
@@ -12,19 +12,32 @@ from django.core.exceptions import (
     FieldDoesNotExist,
     ImproperlyConfigured,
     PermissionDenied,
+    SuspiciousFileOperation,
 )
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.db import models, transaction
 from django.db.models import prefetch_related_objects
 from django.db.models import Q
 from django.forms import ModelForm, modelform_factory
 from django.http import Http404
+from django.utils.datastructures import MultiValueDict
 from django.utils.text import slugify
 
-from . import schema
-from .errors import InvalidArguments, ToolError
-from .items import Item, ResourceSpec, ToolSpec
-from .permissions import check_permission
-from .providers import Provider
+from ..core import files as file_arguments
+from ..core import schema
+from ..core.files import DEFAULT_SOURCES, SOURCES, FileValue
+from ..core.items import Item, ResourceSpec, ToolSpec
+from ..errors import InvalidArguments, ToolError
+from ..permissions import check_permission
+from .base import Provider
+from .fields import (
+    base_annotation,
+    field_annotation,
+    file_field,
+    is_writable,
+    upload_prefix,
+    write_parameter,
+)
 
 ACTIONS = ("list", "get", "create", "update", "delete")
 WRITE_ACTIONS = ("create", "update", "delete")
@@ -54,76 +67,6 @@ _STRING_LOOKUPS = {
 }
 _INT_LOOKUPS = {"year", "month", "day", "week", "week_day", "iso_week_day", "quarter"}
 _INT_LOOKUPS |= {"hour", "minute", "second", "iso_year"}
-
-
-def field_annotation(field):
-    """The Python type of a model field's value, as used for schemas."""
-    if field.many_to_many or field.one_to_many:
-        return list[field_annotation(field.related_model._meta.pk)]
-    if field.is_relation:
-        annotation = field_annotation(field.target_field)
-    elif field.choices:
-        values = []
-        for value, label in field.flatchoices:
-            if value not in ("", None):
-                values.append(value)
-        annotation = Literal[tuple(values)] if values else _base_annotation(field)
-    else:
-        annotation = _base_annotation(field)
-    if field.null and annotation is not Any:
-        annotation = Optional[annotation]
-    return annotation
-
-
-def _base_annotation(field):
-    if isinstance(field, models.BooleanField):
-        return bool
-    if isinstance(field, (models.IntegerField, models.AutoField)):
-        return int
-    if isinstance(field, models.FloatField):
-        return float
-    if isinstance(field, models.DecimalField):
-        return decimal.Decimal
-    if isinstance(field, models.DateTimeField):
-        return datetime.datetime
-    if isinstance(field, models.DateField):
-        return datetime.date
-    if isinstance(field, models.UUIDField):
-        return uuid.UUID
-    if isinstance(field, models.JSONField):
-        return Any
-    if isinstance(field, (models.CharField, models.TextField, models.FileField)):
-        return str
-    return Any
-
-
-def is_writable(opts, name):
-    """An editable model field that a ``ModelForm`` can write."""
-    try:
-        field = opts.pk if name == "pk" else opts.get_field(name)
-    except FieldDoesNotExist:
-        return False
-    if field.auto_created or not field.editable or field.primary_key:
-        return False
-    if field.one_to_many or isinstance(field, models.FileField):
-        return False
-    return field.concrete or field.many_to_many
-
-
-def write_parameter(opts, name, partial, required=None):
-    """``(name, annotation, default)`` of a writable field."""
-    try:
-        field = opts.get_field(name)
-    except FieldDoesNotExist:
-        field = None
-    annotation = Any if field is None else field_annotation(field)
-    if required is None:
-        if field is None or field.many_to_many:
-            required = False
-        else:
-            required = not (field.blank or field.null or field.has_default())
-    required = required and not partial
-    return (name, annotation, inspect.Parameter.empty if required else None)
 
 
 def form_error(form):
@@ -215,6 +158,9 @@ class ModelProvider(Provider):
     related_labels = None  # None follows MCPServer(related_labels=...)
     page_size = 20
     max_page_size = 100
+    file_sources = DEFAULT_SOURCES  # ["data"]; "path" and "url" are opt-in
+    max_file_size = 10 * 1024 * 1024  # bytes, uploads and fetches; None: no limit
+    file_fetch_timeout = 10  # seconds
 
     # Admin-style preset: permissions = ModelProvider.django_model_permissions
     django_model_permissions = {
@@ -268,6 +214,17 @@ class ModelProvider(Provider):
             )
         if self.lookup_field != "pk":
             self.get_model_field(self.lookup_field)
+        unknown = set(self.file_sources) - set(SOURCES)
+        declared = getattr(type(self), "write_fields", None) or ()
+        if not self.file_sources and any(file_field(self.opts, n) for n in declared):
+            raise ImproperlyConfigured(
+                f"{label}: write_fields names file fields but file_sources is "
+                "empty; add a source or leave them out of write_fields."
+            )
+        if unknown:
+            raise ImproperlyConfigured(
+                f"{label}: unknown file_sources {sorted(unknown)}; use {SOURCES}."
+            )
         clash = RESERVED_ARGUMENTS & set(self.get_filters())
         if clash:
             raise ImproperlyConfigured(f"{label}: reserved filter names {clash}.")
@@ -459,7 +416,7 @@ class ModelProvider(Provider):
         elif field.choices or not field.null:
             base = field_annotation(field)
         else:
-            base = _base_annotation(field)
+            base = base_annotation(field)
         last = lookup.rsplit("__", 1)[-1] if lookup else ""
         if last in ("in", "range"):
             return list[base]
@@ -617,28 +574,165 @@ class ModelProvider(Provider):
             serializer_fields = self.serializer().fields
         params = []
         for name in self.get_write_fields():
-            required = None
+            required = nullable = None
+            as_file = True
             if name in serializer_fields:
                 required = serializer_fields[name].required
-            params.append(write_parameter(self.opts, name, partial, required))
+                # null is passed to the serializer, which decides
+                nullable = getattr(serializer_fields[name], "allow_null", False)
+                as_file = _is_serializer_file_field(serializer_fields[name])
+            if as_file and not self.file_sources and file_field(self.opts, name):
+                continue  # no source: file fields are read-only
+            params.append(
+                write_parameter(
+                    self.opts,
+                    name,
+                    partial,
+                    required,
+                    self.file_sources,
+                    nullable,
+                    as_file,
+                )
+            )
         return params
 
     def validate(self, ctx, data, instance=None):
         """Validated data for ``perform_create`` / ``perform_update``."""
+        data, files = self.resolve_files(ctx, data)
         if self.serializer is not None:
+            for name, file in files.items():
+                data[name] = None if file is False else file
             serializer = self.serializer(
                 instance=instance,
                 data=data,
                 partial=instance is not None,
                 context=self.get_serializer_context(ctx),
             )
-            serializer.is_valid(raise_exception=True)
+            with closing_stored_files(files):
+                serializer.is_valid(raise_exception=True)
             return dict(serializer.validated_data)
-        form_class = modelform_factory(self.model, form=self.form, fields=list(data))
-        form = form_class(data=data, instance=instance)
-        if not form.is_valid():
+        names = [*data, *files]
+        form_class = modelform_factory(self.model, form=self.form, fields=names)
+        form = form_class(data=data, files=form_files(files), instance=instance)
+        with closing_stored_files(files):
+            valid = form.is_valid()
+        if not valid:
             raise form_error(form)
-        return {name: form.cleaned_data[name] for name in data}
+        check_cleared(form, files)
+        cleaned = {name: form.cleaned_data[name] for name in names}
+        for name in files:
+            if cleaned[name] is False:  # cleared: the model stores an empty name
+                cleaned[name] = ""
+        return cleaned
+
+    # --- files --------------------------------------------------------------
+
+    def resolve_files(self, ctx, data, opts=None):
+        """``(data, files)``: file arguments taken out of ``data`` as files a form
+        accepts, ``False`` where the argument was ``null`` (clear)."""
+        opts = opts or self.opts
+        data, files = dict(data), {}
+        for name, value in list(data.items()):
+            field = file_field(opts, name)
+            if field is None or not (value is None or isinstance(value, FileValue)):
+                continue
+            del data[name]
+            files[name] = (
+                False if value is None else self.resolve_file(ctx, field, value)
+            )
+        return data, files
+
+    def resolve_file(self, ctx, field, value):
+        """An uploaded file (``data``, ``url``) or a stored one (``path``)."""
+        if value.source == "path":
+            return self.stored_file(ctx, field, value.value)
+        content_type = None
+        if value.source == "url":
+            content, name, content_type = self.fetch_file(ctx, field, value.value)
+            # the client did not choose this name, so it must not fail the form
+            limit = field.max_length
+            if limit is not None:
+                limit = max(limit - len(upload_prefix(field) or ""), 8)
+            name = file_arguments.shorten_name(name, limit)
+        else:
+            content, name = value.value, value.name
+        if self.max_file_size is not None and len(content) > self.max_file_size:
+            raise ToolError(
+                f"{field.name}: the file is larger than {self.max_file_size} bytes."
+            )
+        if content_type is None:
+            content_type = mimetypes.guess_type(name)[0]
+        # a field file not yet saved, so a failed write can delete what the
+        # save stored (see removing_uploads_on_error)
+        upload = field.attr_class(None, field, name)
+        upload.file = SimpleUploadedFile(name, content, content_type)
+        upload._committed = False
+        upload._mcp_upload = True
+        return upload
+
+    @contextmanager
+    def removing_uploads_on_error(self, values):
+        """Delete files a failed write already stored: the transaction rolls
+        back the rows but not the storage."""
+        uploads = [value for value in values if getattr(value, "_mcp_upload", False)]
+        try:
+            yield
+        except BaseException:
+            for upload in uploads:
+                if upload._committed and upload.name:
+                    upload.storage.delete(upload.name)
+            raise
+
+    def stored_file(self, ctx, field, path):
+        """The file at ``path`` in the field's storage, assigned without a copy.
+
+        Only paths ``allows_file_path`` accepts; remove ``"path"`` from
+        ``file_sources`` to refuse them all.
+        """
+        if not self.allows_file_path(ctx, field, path):
+            prefix = upload_prefix(field)
+            if type(self).allows_file_path is not ModelProvider.allows_file_path:
+                raise ToolError(f"{field.name}: path {path!r} is not allowed.")
+            if prefix is None:
+                raise ToolError(f"{field.name} does not accept stored paths.")
+            raise ToolError(f"{field.name}: path must be under {prefix!r}.")
+        storage = field.storage
+        try:
+            exists = storage.exists(path)
+        except SuspiciousFileOperation:
+            exists = False
+        if exists:
+            try:
+                directories = storage.listdir(posixpath.dirname(path))[0]
+            except (NotImplementedError, OSError):
+                directories = []
+            exists = posixpath.basename(path) not in directories
+        if not exists:
+            raise ToolError(f"{field.name}: no file at {path!r}.")
+        # validation reads the file (an ImageField all of it), so bound it
+        if self.max_file_size is not None and storage.size(path) > self.max_file_size:
+            raise ToolError(
+                f"{field.name}: the file is larger than {self.max_file_size} bytes."
+            )
+        return field.attr_class(None, field, path)
+
+    def allows_file_path(self, ctx, field, path):
+        """Whether ``path`` may be referenced: by default only files under the
+        static folder of the field's ``upload_to``, where its own uploads go,
+        so a record cannot point at another field's (private) files. A
+        callable or empty ``upload_to`` accepts no path until overridden."""
+        prefix = upload_prefix(field)
+        return prefix is not None and path.startswith(prefix)
+
+    def fetch_file(self, ctx, field, url):
+        """``(content, name, content_type)`` for a ``url`` argument.
+
+        Only http(s) to public addresses, no proxies; override for an allowlist
+        of hosts or a fetcher of your own.
+        """
+        return file_arguments.fetch(
+            url, max_size=self.max_file_size, timeout=self.file_fetch_timeout
+        )
 
     def _split_many(self, data):
         many = {}
@@ -709,7 +803,7 @@ class ModelProvider(Provider):
 
     def run_create(self, ctx, **data):
         data = self.validate(ctx, data)
-        with transaction.atomic():
+        with self.removing_uploads_on_error(data.values()), transaction.atomic():
             instance = self.perform_create(ctx, data)
         return self.serialize(ctx, instance, detail=True)
 
@@ -717,7 +811,7 @@ class ModelProvider(Provider):
         value = kwargs.pop(self.lookup_argument)
         instance = self.get_object(ctx, value, "update")
         data = self.validate(ctx, kwargs, instance)
-        with transaction.atomic():
+        with self.removing_uploads_on_error(data.values()), transaction.atomic():
             instance = self.perform_update(ctx, instance, data)
         return self.serialize(ctx, instance, detail=True)
 
@@ -916,6 +1010,42 @@ class ModelProvider(Provider):
                 for name, annotation, _ in self.write_parameters(partial=True)
             }
         return entry
+
+
+def form_files(files):
+    """``files`` for a form: a ``MultiValueDict``, as widgets taking several
+    files call ``getlist``."""
+    return MultiValueDict({name: [file] for name, file in files.items()})
+
+
+@contextmanager
+def closing_stored_files(files):
+    """Close the stored files (``path``) that validation opened; uploads stay
+    open for the save."""
+    try:
+        yield
+    finally:
+        for file in files.values():
+            if file and getattr(file, "_committed", False):
+                file.close()
+
+
+def check_cleared(form, files, prefix=""):
+    """Refuse a ``null`` the form ignored: a required form field keeps its
+    file when sent ``False``."""
+    for name, file in files.items():
+        if file is False and form.cleaned_data.get(name):
+            raise ToolError(f"{prefix}{name} is required and cannot be cleared.")
+
+
+def _is_serializer_file_field(field):
+    """A DRF ``FileField`` (``ImageField`` included); other serializer fields
+    on a model file field (base64 strings, URLs) keep their own values."""
+    try:
+        from rest_framework.fields import FileField
+    except ImportError:
+        return False
+    return isinstance(field, FileField)
 
 
 def _supports_prefetch(instance, name):

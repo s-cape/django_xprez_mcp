@@ -8,7 +8,7 @@ from django.core.exceptions import PermissionDenied, ValidationError
 from django.http import Http404
 
 from xprez_mcp import Provider, ToolError, mcp, prompt, resource, tool
-from xprez_mcp.results import assistant, user
+from xprez_mcp.core.results import assistant, user
 
 NOTES = {1: "First note", 2: "Second note"}
 

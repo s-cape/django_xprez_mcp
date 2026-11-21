@@ -5,10 +5,10 @@ from typing import Annotated, Any, Optional, Union
 
 from django.core.exceptions import ImproperlyConfigured
 
-from . import schema
-from .errors import InvalidArguments
-from .items import Item, ToolSpec
-from .model_provider import HINTS
+from ..core import schema
+from ..errors import InvalidArguments
+from ..core.items import Item, ToolSpec
+from .model import HINTS
 
 MODEL = Annotated[str, "A model from models_list"]
 ID = Annotated[Union[str, int], "The record's lookup value (see models_list)"]

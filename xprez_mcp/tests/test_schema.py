@@ -9,14 +9,14 @@ from typing import Annotated, Any, Literal, Optional
 from django.core.exceptions import ImproperlyConfigured
 from django.test import SimpleTestCase
 
-from xprez_mcp.errors import InvalidArguments
-from xprez_mcp.schema import (
+from xprez_mcp.core.schema import (
     annotation_schema,
     coerce_arguments,
     coerce_strings,
     signature_schema,
     validate_json,
 )
+from xprez_mcp.errors import InvalidArguments
 
 
 class Size(enum.Enum):

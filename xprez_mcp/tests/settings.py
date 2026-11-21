@@ -35,7 +35,7 @@ TEMPLATES = [
 ]
 XPREZ_MCP = {
     "NAME": "test",
-    "PERMISSION": "authenticated",
+    "PERMISSION_CALLBACK": "xprez_mcp.permissions.allow_authenticated",
     "TOKEN_RESOLVER": "xprez_mcp.tests.testapp.tokens.resolve",
     "EXCLUDE": ["hidden_*"],
 }

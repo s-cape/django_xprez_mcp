@@ -8,7 +8,7 @@ from django.apps import apps
 from django.core.exceptions import ImproperlyConfigured
 
 from . import schema
-from .permissions import check_permission
+from ..permissions import check_permission
 
 URI_PARAMETER = re.compile(r"\{(\w+)\}")
 

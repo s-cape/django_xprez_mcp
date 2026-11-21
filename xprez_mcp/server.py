@@ -20,9 +20,12 @@ from django.http import Http404
 from django.urls import path
 from django.utils.module_loading import import_string
 
-from . import conf, drf, results
-from .context import CallContext
-from .decorators import get_spec, prompt, resource, tool
+from . import conf
+from .core import results
+from .core.context import CallContext
+from .core.decorators import get_spec, prompt, resource, tool
+from .core.items import Item
+from .core.schema import coerce_strings
 from .errors import (
     INVALID_PARAMS,
     METHOD_NOT_FOUND,
@@ -34,10 +37,9 @@ from .errors import (
     RpcError,
     ToolError,
 )
-from .items import Item
-from .permissions import check_permission
-from .providers import Provider
-from .schema import coerce_strings
+from .integrations import drf
+from .permissions import check_permission, check_permission_names
+from .providers.base import Provider
 
 logger = logging.getLogger("xprez_mcp")
 
@@ -78,6 +80,7 @@ class MCPServer:
         instructions=None,
         authentication=None,
         permission=None,
+        permission_callback=None,
         allow_anonymous=False,
         allowed_origins=None,
         exclude=(),
@@ -95,6 +98,7 @@ class MCPServer:
         self.instructions = instructions
         self.authentication = authentication
         self._permission = permission
+        self._permission_callback = permission_callback
         self.allow_anonymous = allow_anonymous
         self._allowed_origins = allowed_origins
         self.exposure = exposure
@@ -126,12 +130,25 @@ class MCPServer:
     def version(self):
         return self._version or conf.get("VERSION")
 
+    def _permission_arguments(self):
+        # Either server argument replaces both settings, so a server never
+        # inherits half of the project's access rule.
+        if self._permission is not None or self._permission_callback is not None:
+            return self._permission, self._permission_callback
+        return conf.get("PERMISSION"), conf.get("PERMISSION_CALLBACK")
+
     @property
     def permission(self):
-        """Who may use the server at all. None means nobody (closed by default)."""
-        if self._permission is not None:
-            return self._permission
-        return conf.get("PERMISSION")
+        """Django permission names required to use the server."""
+        return self._permission_arguments()[0]
+
+    @property
+    def permission_callback(self):
+        """``f(ctx) -> bool`` required to use the server; dotted paths are imported."""
+        callback = self._permission_arguments()[1]
+        if isinstance(callback, str):
+            callback = import_string(callback)
+        return callback
 
     @property
     def list_page_size(self):
@@ -287,13 +304,13 @@ class MCPServer:
         """Registered providers, then those built by ``register_admin``."""
         providers = list(self._registry.values())
         if self._admin_sites:
-            from .admin_provider import build_admin_providers
+            from .providers.admin.provider import build_admin_providers
 
             providers += build_admin_providers(self, self._admin_sites)
         return providers
 
     def build_catalog(self):
-        from .model_provider import ModelProvider
+        from .providers.model import ModelProvider
 
         self._trusted_providers = set()
         providers = self.get_providers()
@@ -306,7 +323,7 @@ class MCPServer:
             and provider.get_exposure() == "generic"
         ]
         if generic:
-            from .generic import build_items
+            from .providers.generic import build_items
 
             items += build_items(self, generic)
         exclude = [*conf.get("EXCLUDE"), *self.exclude]
@@ -423,11 +440,14 @@ class MCPServer:
         return None
 
     def has_access(self, ctx):
-        """The server-wide permission, checked before any method."""
-        permission = self.permission
-        if permission is None:
+        """Who may use the server, checked before any method. Both the permission
+        and the callback must pass when set; with neither, nobody gets in."""
+        permission, callback = self.permission, self.permission_callback
+        if permission is None and callback is None:
             return False
-        return check_permission(permission, ctx)
+        return check_permission_names(permission, ctx) and (
+            callback is None or bool(callback(ctx))
+        )
 
     def get_context(self, request, user, protocol_version=None, meta=None):
         return self.context_class(

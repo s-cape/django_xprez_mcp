@@ -14,32 +14,31 @@ def allow_staff(ctx):
     return allow_authenticated(ctx) and ctx.user.is_staff
 
 
-# Django permission names always contain a dot, so these cannot clash.
-SHORTHANDS = {
-    "any": allow_any,
-    "authenticated": allow_authenticated,
-    "staff": allow_staff,
-}
-
-
 def check_permission(permission, ctx):
-    """``permission`` is None, a permission string, a list of them, ``f(ctx)``,
-    or one of the shorthands ``"any"``, ``"authenticated"``, ``"staff"``."""
+    """``permission`` is None, a callable ``f(ctx) -> bool``, or Django permission
+    names (``"app_label.codename"`` or a list of them, all required)."""
+    if callable(permission):
+        return bool(permission(ctx))
+    return check_permission_names(permission, ctx)
+
+
+def check_permission_names(permission, ctx):
+    """Like ``check_permission`` but only for Django permission names."""
     if permission is None:
         return True
     if callable(permission):
-        return bool(permission(ctx))
-    perms = (permission,) if isinstance(permission, str) else tuple(permission)
-    for perm in perms:
-        if "." not in perm:
-            if perm not in SHORTHANDS:
-                raise ImproperlyConfigured(
-                    f"Unknown permission {perm!r}: use 'app_label.codename' or "
-                    f"one of {sorted(SHORTHANDS)}."
-                )
-            if not SHORTHANDS[perm](ctx):
-                return False
-    names = [perm for perm in perms if "." in perm]
+        raise ImproperlyConfigured(
+            f"Invalid permission {permission!r}: only Django permission names "
+            "here; pass the callable as permission_callback."
+        )
+    names = [permission] if isinstance(permission, str) else list(permission)
+    for name in names:
+        if not isinstance(name, str) or "." not in name:
+            raise ImproperlyConfigured(
+                f"Invalid permission {name!r}: strings are Django permission "
+                "names ('app_label.codename'); pass a callable for other checks, "
+                "e.g. xprez_mcp.permissions.allow_staff."
+            )
     if not names:
         return True
     user = ctx.user

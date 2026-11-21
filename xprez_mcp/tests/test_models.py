@@ -9,8 +9,9 @@ from django.test import SimpleTestCase, TestCase, override_settings
 from django.test.utils import CaptureQueriesContext
 
 from xprez_mcp import MCPServer, ModelProvider
-from xprez_mcp.context import CallContext
-from xprez_mcp.model_provider import field_annotation
+from xprez_mcp.core.context import CallContext
+from xprez_mcp.permissions import allow_staff
+from xprez_mcp.providers.fields import field_annotation
 
 from .test_protocol import MCPTestCase
 from .testapp.models import Client, ColoredTag, Industry, Note, Tag
@@ -403,7 +404,7 @@ class ExposureGuardTests(TestCase):
         attributes = {
             "fields": ["slug"],
             "lookup_field": "slug",
-            "permissions": {"list": "staff"},
+            "permissions": {"list": allow_staff},
         }
         provider = type("P", (ModelProvider,), attributes)(
             MCPServer(name="complete"), model=Client

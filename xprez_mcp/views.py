@@ -17,7 +17,7 @@ from .errors import (
     AuthenticationFailed,
     RpcError,
 )
-from .results import dumps
+from .core.results import dumps
 
 logger = logging.getLogger("xprez_mcp")
 

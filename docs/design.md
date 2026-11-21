@@ -6,7 +6,39 @@ and prompts, filtered by the calling user's permissions.
 
 Status: phases 1 (core), 2 (models) and 3 (admin) implemented; phases 2 and
 3 are not yet proven in a project. Sections marked *(planned)* describe API
-that does not exist yet.
+that does not exist yet. Features marked *(experimental)* exist but were
+built ahead of a project needing them: they may change or be removed in any
+release without a deprecation period.
+
+Breaking in 0.6:
+
+- A permission is Django permission names or a callable, nothing else. The
+  shorthand strings `"staff"`, `"authenticated"` and `"any"` are gone (they
+  raise `ImproperlyConfigured`); pass `xprez_mcp.permissions.allow_staff`,
+  `allow_authenticated` or `allow_any` instead. In settings, which cannot
+  hold project functions comfortably, a callable is the new
+  `PERMISSION_CALLBACK` (a dotted path). The server's `PERMISSION` /
+  `permission=` takes Django permission names only; its callable is
+  `permission_callback=`.
+- File fields (`FileField`, `ImageField`) are writable, so they join the
+  default `write_fields` and the admin's writable fields; a file field without
+  `blank=True` is a required argument of `create`.
+- Modules moved into packages (see [Package layout](#package-layout)).
+  Names exported from `xprez_mcp` are unchanged; direct module imports move:
+
+  | Was | Is |
+  |---|---|
+  | `xprez_mcp.schema`, `results`, `context`, `items`, `decorators` | `xprez_mcp.core.*` |
+  | `xprez_mcp.providers` (module) | `xprez_mcp.providers.base` (`providers` is a package) |
+  | `xprez_mcp.model_provider` | `xprez_mcp.providers.model` (field helpers in `providers.fields`) |
+  | `xprez_mcp.generic` | `xprez_mcp.providers.generic` |
+  | `xprez_mcp.admin_provider` | `xprez_mcp.providers.admin.provider` |
+  | `xprez_mcp.admin_request` | `xprez_mcp.providers.admin.request` |
+  | `xprez_mcp.drf` | `xprez_mcp.integrations.drf` |
+
+  `CollectedMessages` is no longer importable from the admin provider's
+  module; it lives in `xprez_mcp.providers.admin.request`. File arguments
+  are new, in `xprez_mcp.core.files`.
 
 Breaking in 0.5:
 
@@ -52,6 +84,32 @@ Breaking in 0.5:
 | `AdminProvider` | A `ModelProvider` driven by a `ModelAdmin`: exactly the admin's permissions, plus its queryset, search, filters, form and history. |
 | `CallContext` (`ctx`) | Passed to every call: server, request, user, protocol version. Projects can subclass it. |
 | Item | One registered tool, resource or prompt. Identified by its name (tools, prompts) or URI (resources). |
+
+## Package layout
+
+Dependencies point one way: `core` ← `providers` ← `server` ← `views`.
+`core` knows nothing of models or the admin, and admin-driven providers live
+only in `providers.admin`, which is imported lazily.
+
+| Path | Contents |
+|---|---|
+| `xprez_mcp` (`__init__`) | The public API. Import from here unless a section names a module. |
+| `server.py` | `MCPServer`: registry, catalog, JSON-RPC methods. |
+| `views.py` | The HTTP endpoint. |
+| `auth.py`, `permissions.py` | Authentication backends and permission callables (dotted paths in settings). |
+| `errors.py`, `conf.py`, `checks.py`, `apps.py` | Exceptions, settings, system checks, app config. |
+| `core/` | Specs and items, decorators, `CallContext`, schemas and argument conversion, results, file arguments. |
+| `providers/` | `Provider` (`base`), `ModelProvider` (`model`), model fields as arguments (`fields`), generic mode (`generic`). |
+| `providers/admin/` | `AdminProvider` (`provider`) and the admin request (`request`). |
+| `integrations/` | Optional libraries (DRF), imported lazily. |
+| `contrib/` | Optional Django apps (`tokens`). |
+
+Where planned work goes: rate limiting and query budgets next to the code they
+guard (`throttling.py` beside `views.py`, query cost in `providers/model.py`);
+audiences, composite tools and tool export in a `catalog/` package split out of
+`server.py`; the SSE transport turns `views.py` into a `transport/` package;
+OAuth turns `auth.py` into a package. A module that outgrows one concern
+becomes a package of the same name, so its import path stays.
 
 ## API
 
@@ -176,7 +234,7 @@ class ClientProvider(ModelProvider):
 - Only `list` and `get` are on by default.
 - `name` (default: the slugified `verbose_name_plural`, `clients`) names the
   model in tool names (`clients_list`), in generic mode and in resource URIs.
-  Without `name`, `name_template` builds it from `{plural}` (the default),
+  Without `name`, `name_template` *(experimental)* builds it from `{plural}` (the default),
   `{app_label}` and `{model_name}`; `"{app_label}_{plural}"` keeps apps with
   the same plural names apart.
   `tool_names` overrides single actions, `descriptions` their descriptions.
@@ -222,6 +280,7 @@ class ClientProvider(ModelProvider):
   model fields. `update` cannot change the lookup field. Validated data goes
   through `perform_create` / `perform_update` / `perform_delete` inside a
   transaction, so projects with a service layer keep it.
+- File fields are written as JSON values (see [File arguments](#file-arguments)).
 - `resources = True` adds `<scheme>://<name>` (the first page) and
   `<scheme>://<name>/{lookup}`, with completion when the lookup is a string
   (only for users who may `list`: it enumerates lookups).
@@ -239,7 +298,7 @@ mcp = MCPServer(exposure="tools")  # default: clients_list, clients_get, ...
 staff_mcp = MCPServer(exposure="generic")
 ```
 
-A provider can override the server default, so a few
+*(Experimental)* A provider can override the server default, so a few
 curated models keep their own tools while the rest of the admin goes generic
 on the same server:
 
@@ -344,7 +403,9 @@ therefore never adds a write tool on its own.
   (`get_fields` / `get_readonly_fields`, or the static `fields` /
   `fieldsets` when an override needs a user), limited to editable model
   fields. Per call, sending a field that `get_fieldsets(request, obj)` or
-  `get_readonly_fields(request, obj)` excludes is an error. Validation uses `get_form(request, obj, fields=sent)`; then
+  `get_readonly_fields(request, obj)` excludes is an error. Validation uses `get_form(request, obj, fields=sent)`
+  with the [file arguments](#file-arguments) as its `files` (the request
+  stays the call's shared one, so `request.FILES` is empty); then
   `save_form`, `save_model`, `save_related` (no formsets; inline rows have
   their own tools, below), and
   `log_addition` / `log_change` with `construct_change_message`, so the
@@ -371,10 +432,10 @@ admin code that needs one fails without session middleware.
 
 Providers that call admin code without being an `AdminProvider` (an app
 with its own admin views, for example) use the same request through
-`xprez_mcp.admin_request`:
+`xprez_mcp.providers.admin.request`:
 
 ```python
-from xprez_mcp.admin_request import get_admin_request, with_messages
+from xprez_mcp.providers.admin.request import get_admin_request, with_messages
 
 request = get_admin_request(ctx, admin.site, write=True, data=post, files=files)
 ...
@@ -417,6 +478,8 @@ where models make mistakes, and "missing row" would be ambiguous):
 | `clients_contacts_update(parent, row, ...)` | `record_inline_update(model, parent, inline, row, data)` |
 | `clients_contacts_delete(parent, row)` | `record_inline_delete(model, parent, inline, row)` |
 
+The generic-mode inline tools are *(experimental)*.
+
 - The inlines are those of `get_formsets_with_inlines(request, obj)`, so
   per-user and per-object rules hold; `inlines = [ContactInline]` limits
   which are exposed. An inline is named by its model's slugified
@@ -432,7 +495,8 @@ where models make mistakes, and "missing row" would be ambiguous):
   change), so `min_num` / `max_num`, the formset's `clean()` and uniqueness
   across rows still apply; rows the user may only view are not validated,
   as in the change form. Then `save_formset` and a `log_change` on the
-  parent, in one transaction per call.
+  parent, in one transaction per call. File fields of a row take
+  [file arguments](#file-arguments) too.
 
 Not in phase 3: admin views beyond the changelist and change form,
 `list_editable`.
@@ -458,7 +522,7 @@ XPREZ_MCP = {
 }
 ```
 
-Writes from third-party apps are opt-in. A tool that is
+*(Experimental)* Writes from third-party apps are opt-in. A tool that is
 not `read_only` and comes from an app installed as a package (its path under
 `site-packages` / `dist-packages`) is left out until the app is allowed:
 
@@ -494,20 +558,37 @@ and registers them itself, the way a custom `AdminSite` does.
 
 Closed by default: a server nobody configured lets nobody in.
 
-A permission is always one of: a permission string (`user.has_perm`), a list
-of them (all required), a callable `permission(ctx) -> bool`, or a shorthand:
-`"authenticated"`, `"staff"` or `"any"` (Django permission names always contain
-a dot, so they cannot clash; an unknown dotless name raises
-`ImproperlyConfigured`). The shorthands are also importable as
-`xprez_mcp.permissions.allow_authenticated`, `allow_staff` and `allow_any`.
+A permission is one of two things, with one meaning each:
+
+- Django permission names: `"app_label.codename"` or a list of them, all
+  required (`user.has_perms`). A string without a dot raises
+  `ImproperlyConfigured`.
+- A callable `permission(ctx) -> bool`. Common ones ship in
+  `xprez_mcp.permissions`: `allow_staff`, `allow_authenticated`, `allow_any`.
+
+Items (`@tool(permission=...)`, `ModelProvider.permissions`) take either in
+one argument: in Python the type tells them apart. Server access keeps them
+in separate keys, because settings name a function by its dotted path, which
+would read like a permission name.
 
 ### Server access
 
 ```python
-XPREZ_MCP = {"PERMISSION": "crm.use_mcp"}  # required, no default
+XPREZ_MCP = {
+    "PERMISSION": "crm.use_mcp",                          # Django permission names
+    "PERMISSION_CALLBACK": "crm.mcp_access.can_use_mcp",  # dotted path to f(ctx) -> bool
+}
 
-sales_mcp = MCPServer(permission=lambda ctx: ctx.user.is_salesperson)
+sales_mcp = MCPServer(name="sales", permission="crm.use_sales_mcp")
+staff_mcp = MCPServer(name="staff", permission_callback=allow_staff)  # or a dotted path
 ```
+
+- No default: set either or both. When both are set, both must pass.
+- `PERMISSION` / `permission=` takes Django permission names only; a callable
+  there raises `ImproperlyConfigured` pointing to `permission_callback`.
+- Either server argument replaces both settings, so a server never inherits
+  half of the project's rule (a public server with `allow_any` is not still
+  held to a project-wide `allow_authenticated`).
 
 - Checked after authentication and before any method, `initialize` included.
   A user who fails it gets `403`, so the client fails when it connects
@@ -515,9 +596,10 @@ sales_mcp = MCPServer(permission=lambda ctx: ctx.user.is_salesperson)
 - Without a permission (neither the setting nor the argument), a system check
   error (`xprez_mcp.E001`) fails `manage.py check`, `runserver` and tests, and
   the server answers `403` in case checks are skipped.
-- Opening up is explicit and visible in review: `"authenticated"`, `"staff"`
-  or `"any"`. `allow_anonymous=True` also needs `"any"` (or a callable that
-  accepts `ctx.user` being None); on its own it no longer opens the server.
+- Opening up is explicit and visible in review: `allow_authenticated`,
+  `allow_staff` or `allow_any`. `allow_anonymous=True` also needs
+  `allow_any` (or a callable that accepts `ctx.user` being None); on its own
+  it does not open the server.
 - The checks cover servers mounted in the URLconf, so an unused default `mcp`
   does not fail them.
 - No bundled `use_mcp` permission: that would need a model and a migration.
@@ -598,6 +680,86 @@ one (validated with a small JSON Schema subset, passed through unconverted).
 Resource URI parameters and prompt arguments arrive as strings and are
 converted with the same type hints.
 
+### File arguments
+
+The transport is JSON only, so the argument of a file field (`FileField`,
+`ImageField`) in `create` / `update`, in generic mode's `data` and in inline
+writes is one of:
+
+```json
+{"data": "<base64>", "name": "hero.jpg"}      // inline upload
+{"path": "images/2026/hero.jpg"}              // a file already in storage, opt-in
+{"url": "https://cdn.example.com/hero.jpg"}   // fetched by the server, opt-in, experimental
+null                                          // clear the field
+```
+
+```python
+class DocumentProvider(ModelProvider):
+    file_sources = ["data", "path", "url"]  # default ["data"]
+    max_file_size = 10 * 1024 * 1024        # bytes, default 10 MiB; None: no limit
+    file_fetch_timeout = 10                 # seconds for the whole fetch
+```
+
+- Leaving the argument out leaves the field unchanged on `update`. `null` is
+  accepted only when the field has `blank=True` (`null=True` alone is not
+  enough: the form keeps the file of a field that is not blank); the stored
+  file is not deleted, as in the admin. A form that makes the field required
+  refuses `null` too, instead of keeping the file. An empty `file_sources`
+  makes file fields read-only; naming a file field in `write_fields` then
+  raises `ImproperlyConfigured`.
+- The schema lists only the shapes in `file_sources`; another shape is an
+  `InvalidArguments` naming the accepted ones. The argument type is
+  `xprez_mcp.core.files.file_argument(sources, nullable)`, usable in hand-written
+  tools; it converts to a `FileValue`.
+- `data` is decoded (a `data:` URL prefix is accepted) and sent with `name`
+  (its last path component) as an upload, so the field's `upload_to` and
+  storage name the file and the form validates it (`ImageField` checks the
+  image). The JSON body is bounded by Django's `DATA_UPLOAD_MAX_MEMORY_SIZE`
+  (2.5 MB by default; base64 adds a third), which projects raise for larger
+  uploads.
+- `path` (opt-in) must be relative, without `.` or `..` segments, and exist
+  in the field's storage as a file, not a directory, no larger than
+  `max_file_size` (`stored_file`). The file is referenced, not copied, and
+  closed again after validation. `allows_file_path(ctx, field, path)` decides
+  which paths a field accepts: by default those under the static part of its
+  `upload_to` (`"docs"` and `"docs/%Y/"` both give `docs/`), so a record
+  cannot point at another field's files. A callable or empty `upload_to`
+  accepts no path until `allows_file_path` is overridden, and an override's
+  refusal is reported as "path ... is not allowed". The default does not
+  know who owns a file, so any caller who can write the field can attach
+  another record's file under that prefix: turn `path` on only where stored
+  files are not private, or override `allows_file_path` with the project's
+  own rule.
+- `url` (opt-in, *experimental*) is fetched by `fetch_file(ctx, field, url)`: http and https
+  only, no proxies, redirects followed, and every address connected to must
+  be public (`ipaddress.is_global`), checked at connect time so redirects and
+  DNS answers cannot reach internal hosts. IPv6 forms that carry an IPv4
+  address (IPv4-mapped, 6to4, Teredo, NAT64 `64:ff9b::/96`) are judged by
+  that address; local-use NAT64 (`64:ff9b:1::/48`) is refused. `file_fetch_timeout` bounds the
+  whole fetch, redirects and slow responses included. The name comes from the
+  final URL (`download` when it has none, or is `.` or `..`; with an
+  extension from the `Content-Type` header when the name has none and the
+  header is sent), shortened to fit the field's `max_length` with its
+  extension kept, since the client did not choose it. A fetch that finishes
+  before the deadline keeps its result even if the timer fires while it is
+  being returned. An inline write fetches only after its
+  row is found. Override `fetch_file` for an allowlist of hosts or a fetcher
+  of your own.
+- With a `serializer`, a model file field takes a file argument only when its
+  serializer field is a DRF `FileField` (or `ImageField`); any other
+  serializer field (a base64 string, a URL) keeps its own type and value. The
+  resolved file (or `None` for `null`) is passed in the serializer's `data`,
+  and the serializer decides what it accepts; `null` is in the schema when
+  the serializer field has `allow_null`.
+- `resolve_files(ctx, data, opts=None)` turns the arguments into the
+  `files` a form gets (`False` clears), so `validate` overrides can reuse it.
+  Forms get them as a `MultiValueDict`, as from a multipart request.
+- Uploads are stored by the save, inside the write's transaction, which
+  cannot roll back storage. When the write fails after that,
+  `removing_uploads_on_error` deletes the files it stored, so no orphan is
+  left. An outer transaction (`ATOMIC_REQUESTS`) rolled back later is not
+  covered.
+
 ## Results and errors
 
 - A tool returning `str` gives a text block. Anything else is JSON-encoded
@@ -620,7 +782,7 @@ converted with the same type hints.
   `resources/list`, `resources/templates/list`, `resources/read`,
   `prompts/list`, `prompts/get`, `completion/complete`. Notifications and
   client responses get `202`.
-- `tools/list`, `resources/list`, `resources/templates/list` and
+- *(Experimental)* `tools/list`, `resources/list`, `resources/templates/list` and
   `prompts/list` page with the spec's `cursor` / `nextCursor`. When paging is
   on, the per-user list is sorted by name or URI and the cursor is the last
   identifier seen (opaque, keyset), so the server stays
@@ -703,7 +865,8 @@ authenticate with.
 XPREZ_MCP = {
     "NAME": "django",              # serverInfo.name of the default server
     "VERSION": "0.0.0",
-    "PERMISSION": None,            # required; see Permissions
+    "PERMISSION": None,            # Django permission names; see Permissions
+    "PERMISSION_CALLBACK": None,   # "myapp.mcp_access.can_use"; one of the two is required
     "AUTODISCOVER": True,
     "AUTODISCOVER_MODULE": "mcp",
     "AUTHENTICATION": ["xprez_mcp.auth.bearer_token"],
@@ -711,16 +874,18 @@ XPREZ_MCP = {
     "ALLOWED_ORIGINS": [],
     "EXCLUDE": [],
     "EXCLUDE_APPS": [],
-    "ALLOW_WRITES": [],            # third-party apps whose writes are exposed
-    "LIST_PAGE_SIZE": None,        # page size of */list; None sends everything
+    "ALLOW_WRITES": [],            # third-party apps whose writes are exposed (experimental)
+    "LIST_PAGE_SIZE": None,        # page size of */list; None sends everything (experimental)
     "RELATED_LABELS": False,       # related records as {"id", "display"}
 }
 ```
 
 With several servers, the settings are defaults:
 
-- `NAME`, `VERSION`, `AUTHENTICATION`, `PERMISSION`, `ALLOWED_ORIGINS`,
-  `LIST_PAGE_SIZE` and `RELATED_LABELS` are replaced by the matching `MCPServer` argument.
+- `NAME`, `VERSION`, `AUTHENTICATION`, `ALLOWED_ORIGINS`, `LIST_PAGE_SIZE`
+  and `RELATED_LABELS` are replaced by the matching `MCPServer` argument.
+  `PERMISSION` and `PERMISSION_CALLBACK` are replaced together when the
+  server passes either one.
   `ALLOW_WRITES` is combined with the server's `allow_writes`.
 - `EXCLUDE` and `EXCLUDE_APPS` are combined with the server's `exclude` /
   `exclude_apps`. A server can exclude more but never bring back what the
@@ -782,8 +947,8 @@ every `search_fields` entry.
 
 - CI measures coverage (`coverage run -m django test ...`) and reports it on
   pull requests; the threshold starts at the measured value and only rises.
-- Uncovered branches in `server.py`, `model_provider.py` and
-  `admin_provider.py` get tests or are removed.
+- Uncovered branches in `server.py`, `providers/model.py` and
+  `providers/admin/provider.py` get tests or are removed.
 - Before 1.0, those three modules are reviewed line by line for dead code,
   error mapping and query counts (`assertNumQueries` on `list`, `get` and the
   inline tools), and split where a module has more than one concern.

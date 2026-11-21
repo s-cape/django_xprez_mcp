@@ -1,13 +1,19 @@
 import json
 
+from django.contrib.auth.models import Permission
 from django.core.exceptions import ImproperlyConfigured
 from django.test import RequestFactory, SimpleTestCase, override_settings
 
 from xprez_mcp import MCPServer
 from xprez_mcp.auth import BearerToken
 from xprez_mcp.checks import check_servers
-from xprez_mcp.context import CallContext
-from xprez_mcp.permissions import check_permission
+from xprez_mcp.core.context import CallContext
+from xprez_mcp.permissions import (
+    allow_any,
+    allow_staff,
+    check_permission,
+    check_permission_names,
+)
 
 from .test_protocol import MCPTestCase
 
@@ -28,17 +34,45 @@ class ServerAccessTests(MCPTestCase):
             self.assertEqual(self.post(PING, token="token-bob").status_code, 200)
 
     def test_checked_before_initialize(self):
-        settings = {"TOKEN_RESOLVER": RESOLVER, "PERMISSION": "staff"}
+        settings = {
+            "TOKEN_RESOLVER": RESOLVER,
+            "PERMISSION_CALLBACK": "xprez_mcp.permissions.allow_staff",
+        }
         message = {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}
         with override_settings(XPREZ_MCP=settings):
             self.assertEqual(self.post(message).status_code, 403)
 
-    def test_server_argument_replaces_setting(self):
-        server = MCPServer(name="x", permission="staff")
-        self.assertEqual(server.permission, "staff")
-        self.assertEqual(MCPServer(name="y").permission, "authenticated")
+    def test_permission_and_callback_both_required(self):
+        settings = {
+            "TOKEN_RESOLVER": RESOLVER,
+            "PERMISSION": "auth.change_user",
+            "PERMISSION_CALLBACK": "xprez_mcp.permissions.allow_staff",
+        }
+        with override_settings(XPREZ_MCP=settings):
+            # bob is staff but lacks auth.change_user
+            self.assertEqual(self.post(PING, token="token-bob").status_code, 403)
+            self.staff.user_permissions.add(
+                Permission.objects.get(codename="change_user")
+            )
+            self.assertEqual(self.post(PING, token="token-bob").status_code, 200)
 
-    def test_anonymous_needs_any(self):
+    def test_server_argument_replaces_both_settings(self):
+        server = MCPServer(name="x", permission_callback=allow_staff)
+        self.assertIsNone(server.permission)
+        self.assertIs(server.permission_callback, allow_staff)
+        server = MCPServer(name="x", permission="auth.view_user")
+        self.assertEqual(server.permission, "auth.view_user")
+        self.assertIsNone(server.permission_callback)
+        default = MCPServer(name="y")
+        self.assertIsNone(default.permission)
+        self.assertEqual(default.permission_callback.__name__, "allow_authenticated")
+
+    def test_server_permission_takes_names_only(self):
+        server = MCPServer(name="x", permission=allow_staff)
+        with self.assertRaisesMessage(ImproperlyConfigured, "permission_callback"):
+            server.has_access(CallContext(server=server))
+
+    def test_anonymous_needs_allow_any(self):
         response = self.post(PING, token=None, url="/open/mcp/")
         self.assertEqual(response.status_code, 200)
         server = MCPServer(name="z", authentication=[], allow_anonymous=True)
@@ -50,7 +84,7 @@ class ServerAccessTests(MCPTestCase):
             name="public",
             authentication=[BearerToken(resolver=lambda request, token: None)],
             allow_anonymous=True,
-            permission="any",
+            permission_callback=allow_any,
         )
         view = server.get_view()
         body = json.dumps(PING)
@@ -73,7 +107,7 @@ class PermissionTests(SimpleTestCase):
     def ctx(self, user=None):
         return CallContext(server=None, user=user)
 
-    def test_shorthands(self):
+    def test_names_and_callables(self):
         class User:
             is_authenticated = True
             is_staff = False
@@ -82,16 +116,19 @@ class PermissionTests(SimpleTestCase):
                 return True
 
         user = User()
-        self.assertTrue(check_permission("any", self.ctx()))
-        self.assertFalse(check_permission("authenticated", self.ctx()))
-        self.assertTrue(check_permission("authenticated", self.ctx(user)))
-        self.assertFalse(check_permission("staff", self.ctx(user)))
-        self.assertFalse(check_permission(["authenticated", "staff"], self.ctx(user)))
-        self.assertTrue(check_permission(["authenticated", "a.b"], self.ctx(user)))
+        self.assertTrue(check_permission(allow_any, self.ctx()))
+        self.assertFalse(check_permission(allow_staff, self.ctx(user)))
+        self.assertFalse(check_permission("a.b", self.ctx()))
+        self.assertTrue(check_permission(["a.b", "c.d"], self.ctx(user)))
 
-    def test_unknown_shorthand(self):
-        with self.assertRaises(ImproperlyConfigured):
-            check_permission("stafff", self.ctx())
+    def test_shorthands_removed(self):
+        for permission in ("staff", ["a.b", "any"], [allow_staff]):
+            with self.assertRaisesMessage(ImproperlyConfigured, "allow_staff"):
+                check_permission(permission, self.ctx())
+
+    def test_names_only(self):
+        with self.assertRaisesMessage(ImproperlyConfigured, "permission_callback"):
+            check_permission_names(allow_staff, self.ctx())
 
 
 class CheckTests(SimpleTestCase):

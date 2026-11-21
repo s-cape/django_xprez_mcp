@@ -93,3 +93,23 @@ class Note(models.Model):
     )
     object_id = models.PositiveIntegerField(null=True, blank=True)
     target = GenericForeignKey()
+
+
+class Document(models.Model):
+    title = models.CharField(max_length=100)
+    file = models.FileField(upload_to="docs/")
+    attachment = models.FileField(upload_to="attachments/", blank=True)
+
+    def __str__(self):
+        return self.title
+
+
+class Page(models.Model):
+    document = models.ForeignKey(
+        Document, related_name="pages", on_delete=models.CASCADE
+    )
+    number = models.PositiveIntegerField()
+    scan = models.FileField(upload_to="scans/", blank=True)
+
+    class Meta:
+        ordering = ["number"]

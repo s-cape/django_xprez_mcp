@@ -17,13 +17,14 @@ def check_servers(app_configs=None, **kwargs):
     for server in sorted(_servers, key=lambda server: server.name or ""):
         if not server.mounted:
             continue
-        if server.permission is None:
+        if server.permission is None and server.permission_callback is None:
             errors.append(
                 checks.Error(
                     f"MCP server {server.name!r} has no permission, so it lets "
                     "nobody in.",
-                    hint='Set XPREZ_MCP["PERMISSION"] or MCPServer(permission=...), '
-                    'for example "app_label.use_mcp" or "authenticated".',
+                    hint='Set XPREZ_MCP["PERMISSION_CALLBACK"] (a dotted path to '
+                    'f(ctx) -> bool) or XPREZ_MCP["PERMISSION"] (Django permission '
+                    "names), or the MCPServer arguments of the same name.",
                     obj=server,
                     id="xprez_mcp.E001",
                 )

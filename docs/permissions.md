@@ -7,7 +7,7 @@ section of [design.md](design.md).
 | Layer | Fails with | Configure with |
 |---|---|---|
 | Authentication | `401` | `AUTHENTICATION`, `TOKEN_RESOLVER` |
-| Server permission | `403`, before `initialize` | `XPREZ_MCP["PERMISSION"]`, `MCPServer(permission=...)` |
+| Server permission | `403`, before `initialize` | `PERMISSION` / `PERMISSION_CALLBACK`, `MCPServer(permission=..., permission_callback=...)` |
 | Provider | items hidden | `Provider.has_permission(ctx)` |
 | Item or action | item hidden | `@tool(permission=...)`, `ModelProvider.permissions` |
 | Rows | not found | `get_queryset(ctx)` |
@@ -19,19 +19,26 @@ so their existence does not leak. Check the result for a user with
 
 ## Writing a permission
 
-Wherever a permission is accepted, it can be:
+A permission is one of:
 
-- a permission string: `"crm.change_client"` (`user.has_perm`),
-- a list of strings and shorthands, all required,
-- a callable: `lambda ctx: ctx.user.is_superuser`,
-- a shorthand: `"authenticated"`, `"staff"` or `"any"`.
+- Django permission names: `"crm.change_client"` or a list of them, all
+  required (`user.has_perms`),
+- a callable: `lambda ctx: ctx.user.is_superuser`, or one of
+  `xprez_mcp.permissions.allow_staff`, `allow_authenticated`, `allow_any`.
+
+Items take either in `permission=`. The server keeps them apart:
+`PERMISSION` / `permission=` for names, `PERMISSION_CALLBACK` /
+`permission_callback=` for the callable (a dotted path in settings).
 
 ## Recipes
 
 Only staff with a project permission may connect:
 
 ```python
-XPREZ_MCP = {"PERMISSION": ["staff", "crm.use_mcp"]}
+XPREZ_MCP = {
+    "PERMISSION": "crm.use_mcp",
+    "PERMISSION_CALLBACK": "xprez_mcp.permissions.allow_staff",
+}
 ```
 
 A whole provider for one group:

@@ -18,7 +18,8 @@ INSTALLED_APPS = [
 ]
 
 XPREZ_MCP = {
-    "PERMISSION": "myapp.use_mcp",  # required: who may use the server at all
+    # required: who may use the server at all
+    "PERMISSION_CALLBACK": "xprez_mcp.permissions.allow_staff",
 }
 ```
 
@@ -37,10 +38,53 @@ urlpatterns = [
 ./manage.py migrate
 ```
 
-`PERMISSION` has no default. Without it `manage.py check` fails with
-`xprez_mcp.E001` and the endpoint answers `403`. Use a permission of your own
-(add it to any model's `Meta.permissions`), or open the server explicitly
-with `"staff"`, `"authenticated"` or `"any"`.
+The server has no default rule: without one, `manage.py check` fails with
+`xprez_mcp.E001` and the endpoint answers `403`. Set one of:
+
+| Setting | Value | Who gets in |
+|---|---|---|
+| `PERMISSION_CALLBACK` | `"xprez_mcp.permissions.allow_staff"` | staff users |
+| | `"xprez_mcp.permissions.allow_authenticated"` | every authenticated user |
+| | `"myapp.mcp_access.can_use_mcp"` | whoever your function returns `True` for |
+| `PERMISSION` | `"myapp.use_mcp"` | users with that Django permission |
+| | `["myapp.use_mcp", "myapp.view_note"]` | users with all of them |
+
+With both set, both must pass.
+
+A function of your own takes the call context:
+
+```python
+# myapp/mcp_access.py
+def can_use_mcp(ctx):
+    return ctx.user.groups.filter(name="mcp").exists()
+```
+
+A Django permission (`"<app_label>.<codename>"`, checked with
+`user.has_perm()`) is granted in the admin like any other; superusers have
+it implicitly. The library ships none, so declare it on a model of your app
+and migrate:
+
+```python
+# myapp/models.py
+class Note(models.Model):
+    ...
+
+    class Meta:
+        permissions = [("use_mcp", "Can use the MCP server")]
+```
+
+A server of your own takes the same two as arguments, a callable or a dotted
+path:
+
+```python
+from xprez_mcp import MCPServer
+
+sales_mcp = MCPServer(name="sales", permission_callback=lambda ctx: ctx.user.is_staff)
+```
+
+Users who fail the check get `403` when the client connects. Which tools
+and rows they see past that point is covered in
+[Permissions](permissions.md).
 
 ## Expose something
 
