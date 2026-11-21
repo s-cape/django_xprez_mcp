@@ -759,7 +759,7 @@ class SerializerFileTests(FilesTestCase):
     def test_upload_fields_only(self):
         from rest_framework import serializers
 
-        from xprez_mcp.providers.model import _is_serializer_file_field
+        from xprez_mcp.integrations.drf import is_file_field
 
         class Base64File(serializers.FileField):
             """Like drf-extra-fields' Base64FileField: decodes a string."""
@@ -767,10 +767,10 @@ class SerializerFileTests(FilesTestCase):
             def to_internal_value(self, data):
                 return data
 
-        self.assertTrue(_is_serializer_file_field(serializers.FileField()))
-        self.assertTrue(_is_serializer_file_field(serializers.ImageField()))
-        self.assertFalse(_is_serializer_file_field(Base64File()))
-        self.assertFalse(_is_serializer_file_field(serializers.CharField()))
+        self.assertTrue(is_file_field(serializers.FileField()))
+        self.assertTrue(is_file_field(serializers.ImageField()))
+        self.assertFalse(is_file_field(Base64File()))
+        self.assertFalse(is_file_field(serializers.CharField()))
 
         class Base64Serializer(serializers.ModelSerializer):
             file = Base64File()
