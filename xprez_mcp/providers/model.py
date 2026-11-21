@@ -1,33 +1,24 @@
 """``ModelProvider``: tools and resources generated from a Django model."""
 
 import base64
-import logging
 import inspect
-import mimetypes
-import posixpath
-from contextlib import contextmanager
 from functools import cached_property
 from typing import Annotated, Any, Literal, Optional
 
-from django.apps import apps
 from django.core.exceptions import (
     FieldDoesNotExist,
     ImproperlyConfigured,
     PermissionDenied,
-    SuspiciousFileOperation,
 )
-from django.core.files.uploadedfile import SimpleUploadedFile
 from django.db import models, transaction
 from django.db.models import prefetch_related_objects
 from django.db.models import Q
 from django.forms import ModelForm, modelform_factory
 from django.http import Http404
-from django.utils.datastructures import MultiValueDict
 from django.utils.text import slugify
 
-from ..core import files as file_arguments
 from ..core import schema
-from ..core.files import DEFAULT_SOURCES, SOURCES, FileValue
+from ..core.files import SOURCES
 from ..core.items import Item, ResourceSpec, ToolSpec
 from ..errors import InvalidArguments, ToolError
 from ..integrations import drf
@@ -38,11 +29,12 @@ from .fields import (
     field_annotation,
     file_field,
     is_writable,
-    upload_prefix,
     write_parameter,
 )
+from .files import FileArgumentsMixin
 
-logger = logging.getLogger("xprez_mcp")
+# importable from here too, where they were first defined
+from .files import check_cleared, closing_stored_files, form_files  # noqa: F401
 
 ACTIONS = ("list", "get", "create", "update", "delete")
 WRITE_ACTIONS = ("create", "update", "delete")
@@ -82,7 +74,7 @@ _INT_LOOKUPS = {"year", "month", "day", "week", "week_day", "iso_week_day", "qua
 _INT_LOOKUPS |= {"hour", "minute", "second", "iso_year"}
 
 
-class ModelProvider(Provider):
+class ModelProvider(FileArgumentsMixin, Provider):
     """A provider generated from a model: list, get, create, update, delete.
 
     Register it with ``@mcp.register(Model)`` or set ``model`` on the class.
@@ -112,9 +104,7 @@ class ModelProvider(Provider):
     related_labels = None  # None follows MCPServer(related_labels=...)
     page_size = 20
     max_page_size = 100
-    file_sources = DEFAULT_SOURCES  # ["data"]; "path" and "url" are opt-in
-    max_file_size = 10 * 1024 * 1024  # bytes, uploads and fetches; None: no limit
-    file_fetch_timeout = 10  # seconds
+    # file_sources, max_file_size, file_fetch_timeout: see FileArgumentsMixin
 
     # require the model's view/add/change/delete permission per action, as
     # the admin does, on top of permissions
@@ -577,134 +567,6 @@ class ModelProvider(Provider):
                 cleaned[name] = ""
         return cleaned
 
-    # --- files --------------------------------------------------------------
-
-    def resolve_files(self, ctx, data, opts=None):
-        """``(data, files)``: file arguments taken out of ``data`` as files a form
-        accepts, ``False`` where the argument was ``null`` (clear)."""
-        opts = opts or self.opts
-        data, files = dict(data), {}
-        for name, value in list(data.items()):
-            field = file_field(opts, name)
-            if field is None or not (value is None or isinstance(value, FileValue)):
-                continue
-            del data[name]
-            files[name] = (
-                False if value is None else self.resolve_file(ctx, field, value)
-            )
-        return data, files
-
-    def resolve_file(self, ctx, field, value):
-        """An uploaded file (``data``, ``url``) or a stored one (``path``)."""
-        if value.source == "path":
-            return self.stored_file(ctx, field, value.value)
-        content_type = None
-        if value.source == "url":
-            content, name, content_type = self.fetch_file(ctx, field, value.value)
-            # the client did not choose this name, so it must not fail the form
-            limit = field.max_length
-            if limit is not None:
-                limit = max(limit - len(upload_prefix(field) or ""), 8)
-            name = file_arguments.shorten_name(name, limit)
-        else:
-            content, name = value.value, value.name
-        if self.max_file_size is not None and len(content) > self.max_file_size:
-            raise ToolError(
-                f"{field.name}: the file is larger than {self.max_file_size} bytes."
-            )
-        if content_type is None:
-            content_type = mimetypes.guess_type(name)[0]
-        # a field file not yet saved, so a failed write can delete what the
-        # save stored (see removing_uploads_on_error)
-        upload = field.attr_class(None, field, name)
-        upload.file = SimpleUploadedFile(name, content, content_type)
-        upload._committed = False
-        upload._mcp_upload = True
-        return upload
-
-    @contextmanager
-    def removing_uploads_on_error(self, values):
-        """Delete files a failed write already stored: the transaction rolls
-        back the rows but not the storage."""
-        uploads = [value for value in values if getattr(value, "_mcp_upload", False)]
-        try:
-            yield
-        except BaseException:
-            for upload in uploads:
-                if upload._committed and upload.name:
-                    try:
-                        upload.storage.delete(upload.name)
-                    except Exception:  # keep the error that failed the write
-                        logger.exception("Could not delete %s", upload.name)
-            raise
-
-    def stored_file(self, ctx, field, path):
-        """The file at ``path`` in the field's storage, assigned without a copy.
-
-        Only paths ``allows_file_path`` accepts; remove ``"path"`` from
-        ``file_sources`` to refuse them all.
-        """
-        if not self.allows_file_path(ctx, field, path):
-            prefix = upload_prefix(field)
-            if type(self).allows_file_path is not ModelProvider.allows_file_path:
-                raise ToolError(f"{field.name}: path {path!r} is not allowed.")
-            if prefix is None:
-                raise ToolError(f"{field.name} does not accept stored paths.")
-            if path.startswith(prefix):
-                raise ToolError(
-                    f"{field.name}: {path!r} is in another file field's folder."
-                )
-            raise ToolError(f"{field.name}: path must be under {prefix!r}.")
-        storage = field.storage
-        try:
-            exists = storage.exists(path)
-        except SuspiciousFileOperation:
-            exists = False
-        if exists:
-            try:
-                directories = storage.listdir(posixpath.dirname(path))[0]
-            except (NotImplementedError, OSError):
-                directories = []
-            exists = posixpath.basename(path) not in directories
-        if not exists:
-            raise ToolError(f"{field.name}: no file at {path!r}.")
-        # validation reads the file (an ImageField all of it), so bound it
-        if self.max_file_size is not None and storage.size(path) > self.max_file_size:
-            raise ToolError(
-                f"{field.name}: the file is larger than {self.max_file_size} bytes."
-            )
-        return field.attr_class(None, field, path)
-
-    def allows_file_path(self, ctx, field, path):
-        """Whether ``path`` may be referenced. By default: under the static
-        folder of the field's ``upload_to``, where its own uploads go, and not
-        under a deeper folder of another file field (``docs/private`` inside
-        ``docs``). A callable or empty ``upload_to`` accepts no path until
-        overridden.
-
-        The default does not know who owns a file: every file in that folder
-        can be referenced, other records' included, and so can those of other
-        fields that share the exact folder. Override for anything stricter.
-        """
-        prefix = upload_prefix(field)
-        if prefix is None or not path.startswith(prefix):
-            return False
-        return not any(
-            path.startswith(other)
-            for other in _other_upload_prefixes(field)
-            if len(other) > len(prefix) and other.startswith(prefix)
-        )
-
-    def fetch_file(self, ctx, field, url):
-        """``(content, name, content_type)`` for a ``url`` argument.
-
-        Only http(s) to public addresses, no proxies; override for an allowlist
-        of hosts or a fetcher of your own.
-        """
-        return file_arguments.fetch(
-            url, max_size=self.max_file_size, timeout=self.file_fetch_timeout
-        )
-
     def _split_many(self, data):
         many = {}
         for name in list(data):
@@ -998,32 +860,6 @@ def form_error(form):
     return ToolError(f"Invalid data. {summary}", data={"fields": errors})
 
 
-def form_files(files):
-    """``files`` for a form: a ``MultiValueDict``, as widgets taking several
-    files call ``getlist``."""
-    return MultiValueDict({name: [file] for name, file in files.items()})
-
-
-@contextmanager
-def closing_stored_files(files):
-    """Close the stored files (``path``) that validation opened; uploads stay
-    open for the save."""
-    try:
-        yield
-    finally:
-        for file in files.values():
-            if file and getattr(file, "_committed", False):
-                file.close()
-
-
-def check_cleared(form, files, prefix=""):
-    """Refuse a ``null`` the form ignored: a required form field keeps its
-    file when sent ``False``."""
-    for name, file in files.items():
-        if file is False and form.cleaned_data.get(name):
-            raise ToolError(f"{prefix}{name} is required and cannot be cleared.")
-
-
 def make_function(qualname, module, parameters, impl):
     """A function with a computed signature, so generated tools get schemas and
     argument conversion from the same machinery as hand-written ones."""
@@ -1069,18 +905,6 @@ def _decode_cursor(cursor):
     if offset < 0:
         raise InvalidArguments("cursor is invalid.")
     return offset
-
-
-def _other_upload_prefixes(field):
-    """The upload prefixes of every other file field of installed models."""
-    prefixes = set()
-    for model in apps.get_models():
-        for other in model._meta.get_fields():
-            if isinstance(other, models.FileField) and other is not field:
-                prefix = upload_prefix(other)
-                if prefix:
-                    prefixes.add(prefix)
-    return prefixes
 
 
 def _supports_prefetch(instance, name):
