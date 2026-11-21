@@ -135,47 +135,6 @@ def file_argument(sources=DEFAULT_SOURCES, nullable=False):
     return _file_argument(tuple(sources), bool(nullable))
 
 
-@lru_cache(maxsize=None)
-def _file_argument(sources, nullable):
-    if not sources:
-        raise ValueError("A file argument needs at least one source.")
-    unknown = set(sources) - set(SOURCES)
-    if unknown:
-        raise ValueError(f"Unknown file sources {sorted(unknown)}.")
-    return type(
-        "FileArgument",
-        (FileArgument,),
-        {"sources": tuple(sources), "nullable": nullable},
-    )
-
-
-def _decode(data, path):
-    if data.startswith("data:") and ";base64," in data:  # a data URL
-        data = data.split(";base64,", 1)[1]
-    try:
-        return base64.b64decode("".join(data.split()), validate=True)
-    except (binascii.Error, ValueError):
-        raise InvalidArguments(f"{path}.data is not valid base64.") from None
-
-
-def _file_name(name, path):
-    name = posixpath.basename(name.replace("\\", "/")).strip()
-    if name in ("", ".", ".."):
-        raise InvalidArguments(f"{path}.name must be a file name.")
-    return name
-
-
-def _storage_path(value, path):
-    parts = value.split("/")
-    if (
-        value.startswith("/")
-        or "\\" in value
-        or any(part in ("", ".", "..") for part in parts)
-    ):
-        raise InvalidArguments(f"{path}.path must be a relative path in storage.")
-    return value
-
-
 # --- fetching ----------------------------------------------------------------
 
 
@@ -203,81 +162,6 @@ def is_public_address(address):
         if embedded:
             return all(address.is_global for address in embedded)
     return ip.is_global
-
-
-# the fetch running in this thread: its sockets and whether its time is up
-_fetching = threading.local()
-
-
-def _public_connection(address, timeout=None, source_address=None, *args, **kwargs):
-    """``socket.create_connection`` that refuses addresses that are not public.
-
-    The check runs on the addresses actually connected to, so redirects and DNS
-    answers that change between lookups cannot reach internal hosts.
-    """
-    expired = getattr(_fetching, "expired", None)
-    if expired is not None and expired.is_set():
-        raise OSError("timed out")
-    host, port = address
-    infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
-    for *_, sockaddr in infos:
-        if not is_public_address(sockaddr[0]):
-            raise ToolError(f"{host} is not a public address.")
-    error = OSError(f"Cannot connect to {host}.")
-    for family, kind, proto, _, sockaddr in infos:
-        sock = socket.socket(family, kind, proto)
-        try:
-            if timeout is not None and timeout is not socket._GLOBAL_DEFAULT_TIMEOUT:
-                sock.settimeout(timeout)
-            if source_address:
-                sock.bind(source_address)
-            sock.connect(sockaddr)
-            sockets = getattr(_fetching, "sockets", None)
-            if sockets is not None:
-                # a duplicate shares the connection but not the descriptor
-                # number, so shutting it down at the deadline is safe
-                sockets.append(sock.dup())
-            return sock
-        except OSError as exc:
-            error = exc
-            sock.close()
-    raise error
-
-
-class _HTTPConnection(http.client.HTTPConnection):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self._create_connection = _public_connection
-
-
-class _HTTPSConnection(http.client.HTTPSConnection):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self._create_connection = _public_connection
-
-
-class _HTTPHandler(urllib.request.HTTPHandler):
-    def http_open(self, req):
-        return self.do_open(_HTTPConnection, req)
-
-
-class _HTTPSHandler(urllib.request.HTTPSHandler):
-    def https_open(self, req):
-        return self.do_open(_HTTPSConnection, req, context=self._context)
-
-
-def _opener():
-    """http(s) only, no proxies: a proxy would be the address checked."""
-    opener = urllib.request.OpenerDirector()
-    for handler in (
-        _HTTPHandler(),
-        _HTTPSHandler(),
-        urllib.request.HTTPRedirectHandler(),
-        urllib.request.HTTPDefaultErrorHandler(),
-        urllib.request.HTTPErrorProcessor(),
-    ):
-        opener.add_handler(handler)
-    return opener
 
 
 def fetch(url, max_size=None, timeout=10):
@@ -326,6 +210,60 @@ def fetch(url, max_size=None, timeout=10):
     return result
 
 
+def shorten_name(name, limit):
+    """``name`` cut to ``limit`` characters, keeping its extension."""
+    if limit is None or len(name) <= limit:
+        return name
+    root, extension = posixpath.splitext(name)
+    if len(extension) >= limit:
+        extension = ""
+    return root[: limit - len(extension)] + extension
+
+
+# --- helpers -----------------------------------------------------------------
+
+
+@lru_cache(maxsize=None)
+def _file_argument(sources, nullable):
+    if not sources:
+        raise ValueError("A file argument needs at least one source.")
+    unknown = set(sources) - set(SOURCES)
+    if unknown:
+        raise ValueError(f"Unknown file sources {sorted(unknown)}.")
+    return type(
+        "FileArgument",
+        (FileArgument,),
+        {"sources": tuple(sources), "nullable": nullable},
+    )
+
+
+def _decode(data, path):
+    if data.startswith("data:") and ";base64," in data:  # a data URL
+        data = data.split(";base64,", 1)[1]
+    try:
+        return base64.b64decode("".join(data.split()), validate=True)
+    except (binascii.Error, ValueError):
+        raise InvalidArguments(f"{path}.data is not valid base64.") from None
+
+
+def _file_name(name, path):
+    name = posixpath.basename(name.replace("\\", "/")).strip()
+    if name in ("", ".", ".."):
+        raise InvalidArguments(f"{path}.name must be a file name.")
+    return name
+
+
+def _storage_path(value, path):
+    parts = value.split("/")
+    if (
+        value.startswith("/")
+        or "\\" in value
+        or any(part in ("", ".", "..") for part in parts)
+    ):
+        raise InvalidArguments(f"{path}.path must be a relative path in storage.")
+    return value
+
+
 def _fetch(url, max_size, timeout):
     request = urllib.request.Request(url, headers={"User-Agent": "django-xprez-mcp"})
     too_large = ToolError(f"The file at {url} is larger than {max_size} bytes.")
@@ -362,11 +300,76 @@ def _fetch(url, max_size, timeout):
     return b"".join(chunks), name, content_type
 
 
-def shorten_name(name, limit):
-    """``name`` cut to ``limit`` characters, keeping its extension."""
-    if limit is None or len(name) <= limit:
-        return name
-    root, extension = posixpath.splitext(name)
-    if len(extension) >= limit:
-        extension = ""
-    return root[: limit - len(extension)] + extension
+def _opener():
+    """http(s) only, no proxies: a proxy would be the address checked."""
+    opener = urllib.request.OpenerDirector()
+    for handler in (
+        _HTTPHandler(),
+        _HTTPSHandler(),
+        urllib.request.HTTPRedirectHandler(),
+        urllib.request.HTTPDefaultErrorHandler(),
+        urllib.request.HTTPErrorProcessor(),
+    ):
+        opener.add_handler(handler)
+    return opener
+
+
+class _HTTPHandler(urllib.request.HTTPHandler):
+    def http_open(self, req):
+        return self.do_open(_HTTPConnection, req)
+
+
+class _HTTPSHandler(urllib.request.HTTPSHandler):
+    def https_open(self, req):
+        return self.do_open(_HTTPSConnection, req, context=self._context)
+
+
+class _HTTPConnection(http.client.HTTPConnection):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._create_connection = _public_connection
+
+
+class _HTTPSConnection(http.client.HTTPSConnection):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._create_connection = _public_connection
+
+
+# the fetch running in this thread: its sockets and whether its time is up
+_fetching = threading.local()
+
+
+def _public_connection(address, timeout=None, source_address=None, *args, **kwargs):
+    """``socket.create_connection`` that refuses addresses that are not public.
+
+    The check runs on the addresses actually connected to, so redirects and DNS
+    answers that change between lookups cannot reach internal hosts.
+    """
+    expired = getattr(_fetching, "expired", None)
+    if expired is not None and expired.is_set():
+        raise OSError("timed out")
+    host, port = address
+    infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    for *_, sockaddr in infos:
+        if not is_public_address(sockaddr[0]):
+            raise ToolError(f"{host} is not a public address.")
+    error = OSError(f"Cannot connect to {host}.")
+    for family, kind, proto, _, sockaddr in infos:
+        sock = socket.socket(family, kind, proto)
+        try:
+            if timeout is not None and timeout is not socket._GLOBAL_DEFAULT_TIMEOUT:
+                sock.settimeout(timeout)
+            if source_address:
+                sock.bind(source_address)
+            sock.connect(sockaddr)
+            sockets = getattr(_fetching, "sockets", None)
+            if sockets is not None:
+                # a duplicate shares the connection but not the descriptor
+                # number, so shutting it down at the deadline is safe
+                sockets.append(sock.dup())
+            return sock
+        except OSError as exc:
+            error = exc
+            sock.close()
+    raise error

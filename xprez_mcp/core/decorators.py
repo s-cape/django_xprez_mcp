@@ -3,13 +3,6 @@ from .items import PromptSpec, ResourceSpec, ToolSpec
 SPEC_ATTRIBUTE = "_xprez_mcp_spec"
 
 
-def _attach(func, spec):
-    setattr(func, SPEC_ATTRIBUTE, spec)
-    if hasattr(spec, "complete"):
-        func.complete = spec.complete
-    return func
-
-
 def get_spec(value):
     return getattr(value, SPEC_ATTRIBUTE, None)
 
@@ -46,3 +39,10 @@ def prompt(func=None, **options):
         return _attach(func, PromptSpec(func, **options))
 
     return decorator(func) if func is not None else decorator
+
+
+def _attach(func, spec):
+    setattr(func, SPEC_ATTRIBUTE, spec)
+    if hasattr(spec, "complete"):
+        func.complete = spec.complete
+    return func

@@ -77,65 +77,6 @@ _INT_LOOKUPS = {"year", "month", "day", "week", "week_day", "iso_week_day", "qua
 _INT_LOOKUPS |= {"hour", "minute", "second", "iso_year"}
 
 
-def form_error(form):
-    """A readable ``ToolError`` from an invalid form or formset."""
-    errors = {
-        field: [error["message"] for error in messages]
-        for field, messages in form.errors.get_json_data().items()
-    }
-    summary = "; ".join(
-        f"{field}: {' '.join(messages)}" for field, messages in errors.items()
-    )
-    return ToolError(f"Invalid data. {summary}", data={"fields": errors})
-
-
-def make_function(qualname, module, parameters, impl):
-    """A function with a computed signature, so generated tools get schemas and
-    argument conversion from the same machinery as hand-written ones."""
-
-    def func(self, ctx, **kwargs):
-        return impl(self, ctx, **kwargs)
-
-    positional = inspect.Parameter.POSITIONAL_OR_KEYWORD
-    keyword = inspect.Parameter.KEYWORD_ONLY
-    params = [
-        inspect.Parameter("self", positional),
-        inspect.Parameter("ctx", positional),
-    ]
-    annotations = {}
-    for name, annotation, default in parameters:
-        params.append(
-            inspect.Parameter(name, keyword, default=default, annotation=annotation)
-        )
-        annotations[name] = annotation
-    func.__signature__ = inspect.Signature(params)
-    func.__annotations__ = annotations
-    func.__name__ = qualname.rsplit(".", 1)[-1]
-    func.__qualname__ = qualname
-    func.__module__ = module
-    return func
-
-
-def signature_function(qualname, module, params):
-    """A function with ``params`` as its signature and no body, for validation."""
-    return make_function(qualname, module, params, lambda provider, ctx, **kwargs: None)
-
-
-def _encode_cursor(offset):
-    return base64.urlsafe_b64encode(str(offset).encode()).decode().rstrip("=")
-
-
-def _decode_cursor(cursor):
-    try:
-        padded = cursor + "=" * (-len(cursor) % 4)
-        offset = int(base64.urlsafe_b64decode(padded.encode()).decode())
-    except (ValueError, UnicodeDecodeError):
-        raise InvalidArguments("cursor is invalid.") from None
-    if offset < 0:
-        raise InvalidArguments("cursor is invalid.")
-    return offset
-
-
 class ModelProvider(Provider):
     """A provider generated from a model: list, get, create, update, delete.
 
@@ -1024,6 +965,21 @@ class ModelProvider(Provider):
         return entry
 
 
+# --- helpers -----------------------------------------------------------------
+
+
+def form_error(form):
+    """A readable ``ToolError`` from an invalid form or formset."""
+    errors = {
+        field: [error["message"] for error in messages]
+        for field, messages in form.errors.get_json_data().items()
+    }
+    summary = "; ".join(
+        f"{field}: {' '.join(messages)}" for field, messages in errors.items()
+    )
+    return ToolError(f"Invalid data. {summary}", data={"fields": errors})
+
+
 def form_files(files):
     """``files`` for a form: a ``MultiValueDict``, as widgets taking several
     files call ``getlist``."""
@@ -1048,6 +1004,53 @@ def check_cleared(form, files, prefix=""):
     for name, file in files.items():
         if file is False and form.cleaned_data.get(name):
             raise ToolError(f"{prefix}{name} is required and cannot be cleared.")
+
+
+def make_function(qualname, module, parameters, impl):
+    """A function with a computed signature, so generated tools get schemas and
+    argument conversion from the same machinery as hand-written ones."""
+
+    def func(self, ctx, **kwargs):
+        return impl(self, ctx, **kwargs)
+
+    positional = inspect.Parameter.POSITIONAL_OR_KEYWORD
+    keyword = inspect.Parameter.KEYWORD_ONLY
+    params = [
+        inspect.Parameter("self", positional),
+        inspect.Parameter("ctx", positional),
+    ]
+    annotations = {}
+    for name, annotation, default in parameters:
+        params.append(
+            inspect.Parameter(name, keyword, default=default, annotation=annotation)
+        )
+        annotations[name] = annotation
+    func.__signature__ = inspect.Signature(params)
+    func.__annotations__ = annotations
+    func.__name__ = qualname.rsplit(".", 1)[-1]
+    func.__qualname__ = qualname
+    func.__module__ = module
+    return func
+
+
+def signature_function(qualname, module, params):
+    """A function with ``params`` as its signature and no body, for validation."""
+    return make_function(qualname, module, params, lambda provider, ctx, **kwargs: None)
+
+
+def _encode_cursor(offset):
+    return base64.urlsafe_b64encode(str(offset).encode()).decode().rstrip("=")
+
+
+def _decode_cursor(cursor):
+    try:
+        padded = cursor + "=" * (-len(cursor) % 4)
+        offset = int(base64.urlsafe_b64decode(padded.encode()).decode())
+    except (ValueError, UnicodeDecodeError):
+        raise InvalidArguments("cursor is invalid.") from None
+    if offset < 0:
+        raise InvalidArguments("cursor is invalid.")
+    return offset
 
 
 def _is_serializer_file_field(field):

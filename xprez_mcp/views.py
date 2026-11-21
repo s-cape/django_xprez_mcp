@@ -22,29 +22,6 @@ from .core.results import dumps
 logger = logging.getLogger("xprez_mcp")
 
 
-def rpc_response(message_id, result=None, error=None):
-    payload = {"jsonrpc": "2.0", "id": message_id}
-    if error is not None:
-        payload["error"] = error
-    else:
-        payload["result"] = result
-    return HttpResponse(dumps(payload), content_type="application/json")
-
-
-def rpc_error(message_id, code, message):
-    return rpc_response(message_id, error={"code": code, "message": message})
-
-
-def origin_allowed(request, allowed):
-    """DNS rebinding protection: browsers send Origin, CLI clients do not."""
-    origin = request.headers.get("Origin")
-    if not origin:
-        return True
-    if origin in allowed or "*" in allowed:
-        return True
-    return urlsplit(origin).netloc == request.get_host()
-
-
 @method_decorator(csrf_exempt, name="dispatch")
 class MCPView(View):
     server = None
@@ -99,6 +76,29 @@ class MCPView(View):
             logger.exception("MCP method %s failed", method)
             return rpc_error(message_id, INTERNAL_ERROR, "Internal error.")
         return rpc_response(message_id, result=result)
+
+
+def rpc_response(message_id, result=None, error=None):
+    payload = {"jsonrpc": "2.0", "id": message_id}
+    if error is not None:
+        payload["error"] = error
+    else:
+        payload["result"] = result
+    return HttpResponse(dumps(payload), content_type="application/json")
+
+
+def rpc_error(message_id, code, message):
+    return rpc_response(message_id, error={"code": code, "message": message})
+
+
+def origin_allowed(request, allowed):
+    """DNS rebinding protection: browsers send Origin, CLI clients do not."""
+    origin = request.headers.get("Origin")
+    if not origin:
+        return True
+    if origin in allowed or "*" in allowed:
+        return True
+    return urlsplit(origin).netloc == request.get_host()
 
 
 def unauthorized():

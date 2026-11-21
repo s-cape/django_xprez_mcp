@@ -8,11 +8,6 @@ from django.utils import timezone
 PREFIX = "mcp"
 
 
-def hash_key(key):
-    # keys are random and long, so a fast hash is enough (no password hashing)
-    return hashlib.sha256(key.encode()).hexdigest()
-
-
 class TokenManager(models.Manager):
     def create_token(self, user, name, expires=None):
         """``(token, key)``: the key exists only here, the database keeps its hash."""
@@ -64,3 +59,8 @@ class Token(models.Model):
 
     def is_expired(self, now=None):
         return self.expires is not None and self.expires <= (now or timezone.now())
+
+
+def hash_key(key):
+    # keys are random and long, so a fast hash is enough (no password hashing)
+    return hashlib.sha256(key.encode()).hexdigest()

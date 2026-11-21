@@ -51,32 +51,6 @@ INLINE_PERMISSIONS = {
 }
 INLINE_OPERATIONS = tuple(INLINE_PERMISSIONS)
 INLINE_ACTIONS = {f"inline_{operation}": operation for operation in INLINE_PERMISSIONS}
-_PLAIN = (
-    str,
-    int,
-    float,
-    bool,
-    type(None),
-    list,
-    dict,
-    datetime.date,
-    datetime.time,
-    decimal.Decimal,
-    uuid.UUID,
-)
-
-
-def plain(value):
-    """A value the JSON encoder can handle; anything else as its string."""
-    if isinstance(value, models.Model):
-        return str(value)
-    if isinstance(value, (list, tuple)):
-        return [plain(item) for item in value]
-    if isinstance(value, str):
-        return str(value)  # SafeString and lazy strings
-    if isinstance(value, _PLAIN):
-        return value
-    return str(value)
 
 
 class AdminProvider(ModelProvider):
@@ -991,40 +965,6 @@ class AdminProvider(ModelProvider):
         return entry
 
 
-def _uploads(files):
-    """``request.FILES`` of a write: the uploads, without the cleared fields."""
-    return {name: file for name, file in files.items() if file is not False}
-
-
-def _touches(path, names):
-    """Whether a search or filter path goes through one of ``names``."""
-    return any(part in names for part in path.lstrip("^=@").split("__"))
-
-
-def _display_callables(list_display):
-    return {entry.__name__: entry for entry in list_display if callable(entry)}
-
-
-def _exposed(model_admin, model):
-    """``mcp_exposed = False`` on an admin, an inline or a model keeps it out."""
-    return getattr(model_admin, "mcp_exposed", True) and getattr(
-        model, "mcp_exposed", True
-    )
-
-
-def _excluded(model, exclude):
-    opts = model._meta
-    for entry in exclude:
-        if entry is model:
-            return True
-        if isinstance(entry, str) and entry.lower() in (
-            opts.app_label,
-            opts.label_lower,
-        ):
-            return True
-    return False
-
-
 def build_admin_providers(server, configs):
     """The providers ``MCPServer.register_admin`` stands for."""
     seen = {
@@ -1058,3 +998,68 @@ def build_admin_providers(server, configs):
             providers.append(provider)
             seen.add(model)
     return providers
+
+
+# --- helpers -----------------------------------------------------------------
+
+
+_PLAIN = (
+    str,
+    int,
+    float,
+    bool,
+    type(None),
+    list,
+    dict,
+    datetime.date,
+    datetime.time,
+    decimal.Decimal,
+    uuid.UUID,
+)
+
+
+def plain(value):
+    """A value the JSON encoder can handle; anything else as its string."""
+    if isinstance(value, models.Model):
+        return str(value)
+    if isinstance(value, (list, tuple)):
+        return [plain(item) for item in value]
+    if isinstance(value, str):
+        return str(value)  # SafeString and lazy strings
+    if isinstance(value, _PLAIN):
+        return value
+    return str(value)
+
+
+def _uploads(files):
+    """``request.FILES`` of a write: the uploads, without the cleared fields."""
+    return {name: file for name, file in files.items() if file is not False}
+
+
+def _touches(path, names):
+    """Whether a search or filter path goes through one of ``names``."""
+    return any(part in names for part in path.lstrip("^=@").split("__"))
+
+
+def _display_callables(list_display):
+    return {entry.__name__: entry for entry in list_display if callable(entry)}
+
+
+def _exposed(model_admin, model):
+    """``mcp_exposed = False`` on an admin, an inline or a model keeps it out."""
+    return getattr(model_admin, "mcp_exposed", True) and getattr(
+        model, "mcp_exposed", True
+    )
+
+
+def _excluded(model, exclude):
+    opts = model._meta
+    for entry in exclude:
+        if entry is model:
+            return True
+        if isinstance(entry, str) and entry.lower() in (
+            opts.app_label,
+            opts.label_lower,
+        ):
+            return True
+    return False

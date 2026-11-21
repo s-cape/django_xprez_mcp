@@ -54,17 +54,6 @@ LONG_NAME = 40
 _servers = weakref.WeakSet()
 
 
-@receiver(setting_changed)
-def _settings_changed(setting, **kwargs):
-    if setting == "XPREZ_MCP":
-        for server in list(_servers):
-            server.clear_cache()
-
-
-def _is_provider_class(value):
-    return isinstance(value, type) and issubclass(value, Provider)
-
-
 class MCPServer:
     """A registry of providers and functions, served at ``server.urls``."""
 
@@ -715,6 +704,23 @@ class MCPServer:
         return None, None
 
 
+mcp = MCPServer()
+
+
+# --- helpers -----------------------------------------------------------------
+
+
+@receiver(setting_changed)
+def _settings_changed(setting, **kwargs):
+    if setting == "XPREZ_MCP":
+        for server in list(_servers):
+            server.clear_cache()
+
+
+def _is_provider_class(value):
+    return isinstance(value, type) and issubclass(value, Provider)
+
+
 def _encode_list_cursor(identifier):
     return base64.urlsafe_b64encode(identifier.encode()).decode().rstrip("=")
 
@@ -731,6 +737,3 @@ def _decode_list_cursor(cursor):
 
 def _user_pk(ctx):
     return getattr(ctx.user, "pk", None)
-
-
-mcp = MCPServer()

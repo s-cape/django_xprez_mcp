@@ -12,20 +12,51 @@ from django.http import HttpRequest, QueryDict
 from django.utils.datastructures import MultiValueDict
 
 
-class CollectedMessages(BaseStorage):
-    """Message storage keeping what admin code adds, for the tool result."""
+def get_admin_request(ctx, site, write=False, data=None, files=None, factory=None):
+    """The admin request for ``site`` in this call, created on first use.
 
-    def _get(self, *args, **kwargs):
-        return [], True
+    One request per call and site, so messages from several admin methods end
+    up in one result. ``method`` is ``POST`` for writes, ``GET`` otherwise.
+    With ``data`` or ``files`` the result is a copy of that request with them
+    as ``POST`` and ``FILES``; the shared request and its other users keep
+    their own. ``factory(ctx)`` builds the request (default:
+    ``build_admin_request``); a request built by default is rebuilt by the
+    first ``factory`` given, keeping the messages collected so far.
+    """
+    requests = ctx.__dict__.setdefault("_admin_requests", {})
+    request = requests.get(site.name)
+    if request is None or (
+        factory is not None and getattr(request, "_mcp_default", False)
+    ):
+        if factory is None:
+            built = build_admin_request(ctx, site)
+            built._mcp_default = True
+        else:
+            built = factory(ctx)
+        if request is not None:
+            built._messages = request._messages
+        request = requests[site.name] = built
+    if data is not None or files is not None:
+        request = copy.copy(request)
+        set_request_data(request, data, files)
+    request.method = "POST" if write else "GET"
+    return request
 
-    def _store(self, messages, response, *args, **kwargs):
+
+def collected_messages(ctx, site):
+    """Messages admin code on ``site`` added during this call."""
+    request = ctx.__dict__.get("_admin_requests", {}).get(site.name)
+    if request is None:
         return []
+    return request._messages.collected()
 
-    def collected(self):
-        return [
-            {"level": message.level_tag, "message": str(message.message)}
-            for message in self._queued_messages
-        ]
+
+def with_messages(ctx, site, result):
+    """``result`` with ``"messages"`` added when admin code added any."""
+    collected = collected_messages(ctx, site)
+    if collected and isinstance(result, dict):
+        result = {**result, "messages": collected}
+    return result
 
 
 def build_admin_request(ctx, site):
@@ -72,48 +103,17 @@ def multi_value(data):
     return result
 
 
-def get_admin_request(ctx, site, write=False, data=None, files=None, factory=None):
-    """The admin request for ``site`` in this call, created on first use.
+class CollectedMessages(BaseStorage):
+    """Message storage keeping what admin code adds, for the tool result."""
 
-    One request per call and site, so messages from several admin methods end
-    up in one result. ``method`` is ``POST`` for writes, ``GET`` otherwise.
-    With ``data`` or ``files`` the result is a copy of that request with them
-    as ``POST`` and ``FILES``; the shared request and its other users keep
-    their own. ``factory(ctx)`` builds the request (default:
-    ``build_admin_request``); a request built by default is rebuilt by the
-    first ``factory`` given, keeping the messages collected so far.
-    """
-    requests = ctx.__dict__.setdefault("_admin_requests", {})
-    request = requests.get(site.name)
-    if request is None or (
-        factory is not None and getattr(request, "_mcp_default", False)
-    ):
-        if factory is None:
-            built = build_admin_request(ctx, site)
-            built._mcp_default = True
-        else:
-            built = factory(ctx)
-        if request is not None:
-            built._messages = request._messages
-        request = requests[site.name] = built
-    if data is not None or files is not None:
-        request = copy.copy(request)
-        set_request_data(request, data, files)
-    request.method = "POST" if write else "GET"
-    return request
+    def _get(self, *args, **kwargs):
+        return [], True
 
-
-def collected_messages(ctx, site):
-    """Messages admin code on ``site`` added during this call."""
-    request = ctx.__dict__.get("_admin_requests", {}).get(site.name)
-    if request is None:
+    def _store(self, messages, response, *args, **kwargs):
         return []
-    return request._messages.collected()
 
-
-def with_messages(ctx, site, result):
-    """``result`` with ``"messages"`` added when admin code added any."""
-    collected = collected_messages(ctx, site)
-    if collected and isinstance(result, dict):
-        result = {**result, "messages": collected}
-    return result
+    def collected(self):
+        return [
+            {"level": message.level_tag, "message": str(message.message)}
+            for message in self._queued_messages
+        ]
