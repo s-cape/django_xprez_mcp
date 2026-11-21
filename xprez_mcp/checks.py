@@ -35,9 +35,8 @@ def check_servers(app_configs=None, **kwargs):
                         f"MCP server {server.name!r} has no permission, so it "
                         "lets nobody in.",
                         hint='Set XPREZ_MCP["PERMISSION"] or '
-                        "MCPServer(permission=...) to a function f(ctx) -> bool "
-                        "or its dotted path, such as "
-                        '"xprez_mcp.permissions.allow_staff".',
+                        "MCPServer(permission=...) to True, False or a function "
+                        "f(ctx) -> bool, such as xprez_mcp.permissions.allow_staff.",
                         obj=server,
                         id="xprez_mcp.E001",
                     )

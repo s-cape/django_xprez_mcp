@@ -1,5 +1,4 @@
 from django.core.exceptions import ImproperlyConfigured
-from django.utils.module_loading import import_string
 
 
 def allow_authenticated(ctx):
@@ -35,13 +34,12 @@ def check_permission(permission, ctx):
 
 
 def resolve_server_permission(permission):
-    """A server's permission as a callable: ``f(ctx) -> bool``, a dotted path to
-    one, ``True`` (everyone), ``False`` (nobody, on purpose) or None (nobody,
-    reported by the system check).
+    """A server's permission as a callable: ``f(ctx) -> bool``, ``True``
+    (everyone), ``False`` (nobody, on purpose) or None (nobody, reported by
+    the system check).
 
-    Only a function: in settings a Django permission name reads like a dotted
-    path, so names are checked in a function of the project's own, e.g.
-    ``def can_use(ctx): return ctx.user.has_perm("crm.use_mcp")``.
+    No strings: a Django permission name is checked in a function, e.g.
+    ``lambda ctx: ctx.user.has_perm("crm.use_mcp")``.
     """
     if permission is True:
         return _everyone
@@ -49,23 +47,12 @@ def resolve_server_permission(permission):
         return _nobody
     if permission is None or callable(permission):
         return permission
-    hint = (
-        "The server permission is True, False, a function f(ctx) -> bool or its "
-        "dotted path, such as 'xprez_mcp.permissions.allow_staff'. To require a Django "
-        "permission, write one: def can_use(ctx): return "
-        "ctx.user.has_perm('app_label.codename')."
+    raise ImproperlyConfigured(
+        f"Invalid server permission {permission!r}: use True, False or a "
+        "function f(ctx) -> bool, such as xprez_mcp.permissions.allow_staff. "
+        "To require a Django permission: "
+        "lambda ctx: ctx.user.has_perm('app_label.codename')."
     )
-    if not isinstance(permission, str):
-        raise ImproperlyConfigured(f"Invalid server permission {permission!r}. {hint}")
-    try:
-        function = import_string(permission)
-    except ImportError:
-        raise ImproperlyConfigured(
-            f"Cannot import the server permission {permission!r}. {hint}"
-        ) from None
-    if not callable(function):
-        raise ImproperlyConfigured(f"{permission!r} is not callable. {hint}")
-    return function
 
 
 def _everyone(ctx):

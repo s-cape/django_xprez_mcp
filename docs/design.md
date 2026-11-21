@@ -18,10 +18,10 @@ Breaking in 0.6:
   `allow_authenticated` instead, and for "anyone" `True` as the server
   permission (an item without a permission is already open).
 - Server access (`PERMISSION`, `MCPServer(permission=...)`) is a function
-  `f(ctx) -> bool`, its dotted path, or `True` / `False`, nothing else. `"PERMISSION":
-  "crm.use_mcp"` no longer works (it fails `manage.py check` with
-  `xprez_mcp.E004`); check the permission in a function:
-  `def can_use(ctx): return ctx.user.has_perm("crm.use_mcp")`.
+  `f(ctx) -> bool`, `True` or `False`, nothing else: no strings, neither
+  permission names nor dotted paths. `"PERMISSION": "crm.use_mcp"` fails
+  `manage.py check` with `xprez_mcp.E004`; check the permission in a
+  function: `lambda ctx: ctx.user.has_perm("crm.use_mcp")`.
 - File fields (`FileField`, `ImageField`) are writable, so they join the
   default `write_fields` and the admin's writable fields; a file field without
   `blank=True` is a required argument of `create`.
@@ -98,7 +98,7 @@ only in `providers.admin`, which is imported lazily.
 | `xprez_mcp` (`__init__`) | The public API. Import from here unless a section names a module. |
 | `server.py` | `MCPServer`: registry, catalog, JSON-RPC methods. |
 | `views.py` | The HTTP endpoint. |
-| `auth.py`, `permissions.py` | Authentication backends and permission callables (dotted paths in settings). |
+| `auth.py`, `permissions.py` | Authentication backends and permission callables (safe to import from settings: nothing in the package reads settings or models at import time). |
 | `errors.py`, `conf.py`, `checks.py`, `apps.py` | Exceptions, settings, system checks, app config. |
 | `core/` | Specs and items, decorators, `CallContext`, schemas and argument conversion, results, file arguments. |
 | `providers/` | `Provider` (`base`), `ModelProvider` (`model`), model fields as arguments (`fields`), generic mode (`generic`). |
@@ -573,27 +573,27 @@ one argument: in Python the type tells them apart.
 
 ### Server access
 
-Server access is a function only, because settings name a function by its
-dotted path, and `"crm.use_mcp"` would read as either. Django permissions are
-checked inside it.
+Server access is a function, `True` or `False`; Django permissions are
+checked inside the function. Settings hold the callable itself: a lambda,
+or a function imported from a module that does not import models (settings
+load before the app registry).
 
 ```python
-# crm/mcp_access.py
-def can_use_mcp(ctx):
-    return ctx.user.is_staff and ctx.user.has_perm("crm.use_mcp")
+from xprez_mcp.permissions import allow_staff
 
-XPREZ_MCP = {"PERMISSION": "crm.mcp_access.can_use_mcp"}  # dotted path
+XPREZ_MCP = {
+    "PERMISSION": lambda ctx: ctx.user.is_staff and ctx.user.has_perm("crm.use_mcp"),
+}
 
-staff_mcp = MCPServer(name="staff", permission=allow_staff)  # or a dotted path
+staff_mcp = MCPServer(name="staff", permission=allow_staff)
 ```
 
 - No default. `MCPServer(permission=...)` replaces the setting.
 - `True` lets everyone in; `False` lets nobody in, like
   no permission, but on purpose, so it does not raise `xprez_mcp.E001`.
-- Anything but those, a callable or the dotted path of one (a permission
-  name, a list) raises `ImproperlyConfigured` with an example function, and a
-  mounted server with such a value fails `manage.py check`
-  (`xprez_mcp.E004`).
+- Anything else (a string, a list) raises `ImproperlyConfigured` with an
+  example function, and a mounted server with such a value fails
+  `manage.py check` (`xprez_mcp.E004`).
 
 - Checked after authentication and before any method, `initialize` included.
   A user who fails it gets `403`, so the client fails when it connects
@@ -870,7 +870,7 @@ authenticate with.
 XPREZ_MCP = {
     "NAME": "django",              # serverInfo.name of the default server
     "VERSION": "0.0.0",
-    "PERMISSION": None,            # required: "myapp.mcp_access.can_use", f(ctx) -> bool
+    "PERMISSION": None,            # required: f(ctx) -> bool, True or False
     "AUTODISCOVER": True,
     "AUTODISCOVER_MODULE": "mcp",
     "AUTHENTICATION": ["xprez_mcp.auth.bearer_token"],

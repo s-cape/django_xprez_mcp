@@ -9,6 +9,7 @@ from django.test import SimpleTestCase, override_settings
 from xprez_mcp import InvalidName, MCPServer, ModelProvider, Provider, tool
 from xprez_mcp.checks import check_names
 from xprez_mcp.server import MCPServer as ServerClass
+from xprez_mcp.permissions import allow_authenticated
 
 from .test_models import ModelTestCase
 from .test_protocol import MCPTestCase
@@ -29,7 +30,7 @@ class PaginationTests(MCPTestCase):
         with override_settings(
             XPREZ_MCP={
                 "NAME": "test",
-                "PERMISSION": "xprez_mcp.permissions.allow_authenticated",
+                "PERMISSION": allow_authenticated,
                 "TOKEN_RESOLVER": "xprez_mcp.tests.testapp.tokens.resolve",
                 "EXCLUDE": ["hidden_*"],
                 "LIST_PAGE_SIZE": 2,

@@ -17,9 +17,11 @@ INSTALLED_APPS = [
     "xprez_mcp.contrib.tokens",  # optional: bearer tokens managed in the admin
 ]
 
+from xprez_mcp.permissions import allow_staff
+
 XPREZ_MCP = {
     # required: who may use the server at all
-    "PERMISSION": "xprez_mcp.permissions.allow_staff",
+    "PERMISSION": allow_staff,
 }
 ```
 
@@ -38,26 +40,31 @@ urlpatterns = [
 ./manage.py migrate
 ```
 
-`PERMISSION` is a function deciding who may use the server, given by its
-dotted path, or `True` / `False`. It has no default: without it, `manage.py check` fails with
+`PERMISSION` decides who may use the server: a function, `True` or `False`
+(no strings). It has no default: without it, `manage.py check` fails with
 `xprez_mcp.E001` and the endpoint answers `403`.
 
 | `PERMISSION` | Who gets in |
 |---|---|
-| `"xprez_mcp.permissions.allow_staff"` | staff users |
-| `"xprez_mcp.permissions.allow_authenticated"` | every authenticated user |
-| `"myapp.mcp_access.can_use_mcp"` | whoever your function returns `True` for |
+| `allow_staff` | staff users |
+| `allow_authenticated` | every authenticated user |
+| `lambda ctx: ctx.user.has_perm("myapp.use_mcp")` | users with that Django permission |
+| a function of your own | whoever it returns `True` for |
 | `True` | everyone who authenticates (and anonymous callers with `allow_anonymous=True`) |
 | `False` | nobody: the server is closed on purpose |
 
-A function of your own takes the call context and returns a boolean. To
-require a Django permission, check it there:
+`allow_staff` and `allow_authenticated` come from `xprez_mcp.permissions`,
+which is safe to import in settings. A function takes the call context and
+returns a boolean; a lambda right in settings needs no import:
 
 ```python
-# myapp/mcp_access.py
-def can_use_mcp(ctx):
-    return ctx.user.is_staff and ctx.user.has_perm("myapp.use_mcp")
+XPREZ_MCP = {
+    "PERMISSION": lambda ctx: ctx.user.is_staff and ctx.user.has_perm("myapp.use_mcp"),
+}
 ```
+
+A function in a module of your own works too, as long as that module does
+not import models: settings load before the app registry is ready.
 
 A Django permission (`"<app_label>.<codename>"`) is granted in the admin like
 any other; superusers have it implicitly. The library ships none, so declare
@@ -72,7 +79,7 @@ class Note(models.Model):
         permissions = [("use_mcp", "Can use the MCP server")]
 ```
 
-A server of your own takes the function itself, or its dotted path:
+A server of your own takes the same values:
 
 ```python
 from xprez_mcp import MCPServer

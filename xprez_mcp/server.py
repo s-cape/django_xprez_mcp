@@ -38,7 +38,7 @@ from .errors import (
     ToolError,
 )
 from .integrations import drf
-from .permissions import check_permission, resolve_server_permission
+from .permissions import resolve_server_permission
 from .providers.base import Provider
 
 logger = logging.getLogger("xprez_mcp")
@@ -132,8 +132,8 @@ class MCPServer:
     def permission(self):
         """``f(ctx) -> bool`` deciding who may use the server, or None (nobody).
 
-        ``MCPServer(permission=...)``, else ``XPREZ_MCP["PERMISSION"]``; a dotted
-        path is imported.
+        ``MCPServer(permission=...)``, else ``XPREZ_MCP["PERMISSION"]``; ``True``
+        and ``False`` become functions.
         """
         permission = self._permission
         if permission is None:

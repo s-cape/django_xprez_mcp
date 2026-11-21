@@ -26,22 +26,19 @@ A permission is one of:
 - a callable: `lambda ctx: ctx.user.is_superuser`, or one of
   `xprez_mcp.permissions.allow_staff`, `allow_authenticated`.
 
-Items take either in `permission=`. Server access takes a function only
-(`PERMISSION` / `MCPServer(permission=...)`, a dotted path in settings),
-because in settings a permission name would read like a dotted path. Check
-Django permissions inside that function.
+Items take either in `permission=`. Server access (`PERMISSION` /
+`MCPServer(permission=...)`) takes a function, `True` or `False`, no
+strings; check Django permissions inside the function.
 
 ## Recipes
 
 Only staff with a project permission may connect:
 
 ```python
-# crm/mcp_access.py
-def can_use_mcp(ctx):
-    return ctx.user.is_staff and ctx.user.has_perm("crm.use_mcp")
-
 # settings.py
-XPREZ_MCP = {"PERMISSION": "crm.mcp_access.can_use_mcp"}
+XPREZ_MCP = {
+    "PERMISSION": lambda ctx: ctx.user.is_staff and ctx.user.has_perm("crm.use_mcp"),
+}
 ```
 
 A whole provider for one group:
