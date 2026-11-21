@@ -369,6 +369,31 @@ the site's name. Its message storage collects what `message_user` /
 (`"messages": [{"level": "info", "message": "..."}]`). `request.session` is whatever the middleware set;
 admin code that needs one fails without session middleware.
 
+Providers that call admin code without being an `AdminProvider` (an app
+with its own admin views, for example) use the same request through
+`xprez_mcp.admin_request`:
+
+```python
+from xprez_mcp.admin_request import get_admin_request, with_messages
+
+request = get_admin_request(ctx, admin.site, write=True, data=post, files=files)
+...
+return with_messages(ctx, admin.site, result)
+```
+
+`get_admin_request(ctx, site, write=False, data=None, files=None,
+factory=None)` returns the call's request for `site`, created on first use
+and shared with every `AdminProvider` on that site, so attributes set on it
+are seen by all of them. With `data` or `files` it returns a copy carrying
+them as `POST` and `FILES` (a plain mapping becomes a `MultiValueDict`); the
+shared request stays empty and messages still go to the call's storage.
+`factory(ctx)` builds the request; a request built by default is rebuilt by
+the first factory given (an `AdminProvider` passes its overridden
+`get_admin_request`), keeping the messages collected so far.
+`build_admin_request(ctx, site)` makes a new one, and
+`collected_messages(ctx, site)` returns the messages without changing a
+result.
+
 **`register_admin`** creates an `AdminProvider` subclass for every model in
 the site's registry, when the catalog is built (so it does not depend on the
 order of autodiscovery). Models registered on the server explicitly win;

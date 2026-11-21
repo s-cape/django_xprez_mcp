@@ -4,7 +4,6 @@ Every permission, queryset, form and save goes through the ``ModelAdmin``, so a
 user can do through MCP exactly what they can do in that admin.
 """
 
-import copy
 import datetime
 import decimal
 import inspect
@@ -17,7 +16,6 @@ from django.contrib import admin
 from django.contrib.admin.utils import flatten, flatten_fieldsets, lookup_field
 from django.contrib.auth.forms import ReadOnlyPasswordHashField
 from django.contrib.auth.models import AnonymousUser
-from django.contrib.messages.storage.base import BaseStorage
 from django.core.exceptions import (
     FieldDoesNotExist,
     ImproperlyConfigured,
@@ -26,11 +24,13 @@ from django.core.exceptions import (
 )
 from django.db import models, transaction
 from django.forms.models import _get_foreign_key
-from django.http import Http404, HttpRequest, QueryDict
+from django.http import Http404, HttpRequest
 from django.utils.datastructures import MultiValueDict
 from django.utils.text import slugify
 
+from . import admin_request as admin_requests
 from . import schema
+from .admin_request import CollectedMessages  # noqa: F401  (moved)
 from .errors import InvalidArguments, ToolError
 from .items import Item, ToolSpec
 from .model_provider import (
@@ -63,22 +63,6 @@ _PLAIN = (
     decimal.Decimal,
     uuid.UUID,
 )
-
-
-class CollectedMessages(BaseStorage):
-    """Message storage keeping what admin code adds, for the tool result."""
-
-    def _get(self, *args, **kwargs):
-        return [], True
-
-    def _store(self, messages, response, *args, **kwargs):
-        return []
-
-    def collected(self):
-        return [
-            {"level": message.level_tag, "message": str(message.message)}
-            for message in self._queued_messages
-        ]
 
 
 def plain(value):
@@ -291,38 +275,20 @@ class AdminProvider(ModelProvider):
 
     # --- the request --------------------------------------------------------
 
-    def admin_request(self, ctx, write=False):
+    def admin_request(self, ctx, write=False, data=None, files=None):
         """A copy of the MCP request for admin code, one per call and site."""
-        requests = ctx.__dict__.setdefault("_admin_requests", {})
-        request = requests.get(self.site.name)
-        if request is None:
-            request = self.get_admin_request(ctx)
-            requests[self.site.name] = request
-        request.method = "POST" if write else "GET"
-        return request
+        factory = None
+        if type(self).get_admin_request is not AdminProvider.get_admin_request:
+            factory = self.get_admin_request
+        return admin_requests.get_admin_request(
+            ctx, self.site, write=write, data=data, files=files, factory=factory
+        )
 
     def get_admin_request(self, ctx):
-        if ctx.request is not None:
-            request = copy.copy(ctx.request)
-        else:
-            request = HttpRequest()
-        request.GET = QueryDict()
-        request.POST = QueryDict()
-        try:
-            request.FILES = MultiValueDict()
-        except AttributeError:  # WSGIRequest.FILES has no setter
-            request._files = MultiValueDict()
-        request.user = ctx.user if ctx.user is not None else AnonymousUser()
-        request.current_app = self.site.name
-        request._messages = CollectedMessages(request)
-        return request
+        return admin_requests.build_admin_request(ctx, self.site)
 
     def with_messages(self, ctx, result):
-        request = ctx.__dict__.get("_admin_requests", {}).get(self.site.name)
-        collected = request._messages.collected() if request is not None else []
-        if collected and isinstance(result, dict):
-            result = {**result, "messages": collected}
-        return result
+        return admin_requests.with_messages(ctx, self.site, result)
 
     # --- permissions --------------------------------------------------------
 
@@ -771,7 +737,7 @@ class AdminProvider(ModelProvider):
         put(f"{prefix}-INITIAL_FORMS", len(initial))
         put(f"{prefix}-MIN_NUM_FORMS", unbound.min_num)
         put(f"{prefix}-MAX_NUM_FORMS", unbound.max_num)
-        request.POST = post
+        request = self.admin_request(ctx, write=True, data=post)
 
         formset = formset_class(
             **model_admin.get_formset_kwargs(request, parent_obj, inline_admin, prefix)
