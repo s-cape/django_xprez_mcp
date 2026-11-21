@@ -482,6 +482,20 @@ class AdminVisibilityTests(AdminTestCase):
                 ctx, "update", "contacts", self.acme.pk, self.ben.pk, email="x@y.z"
             )
 
+    def test_inline_data_stays_off_the_shared_request(self):
+        server = MCPServer(name="inline-request")
+        provider = type("P", (AdminProvider,), {"admin_site": site})(
+            server, model=Client
+        )
+        ctx = CallContext(server=server, user=self.root)
+        shared = provider.admin_request(ctx)
+        provider.run_inline(
+            ctx, "update", "contacts", self.acme.pk, self.ben.pk, name="B"
+        )
+        self.assertEqual(dict(shared.POST), {})
+        self.assertIs(provider.admin_request(ctx, write=True), shared)
+        self.assertEqual(dict(shared.POST), {})
+
     def test_list_display_per_user(self):
         class PerUserAdmin(ClientAdmin):
             def get_list_display(self, request):
