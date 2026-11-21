@@ -8,12 +8,7 @@ from xprez_mcp import MCPServer
 from xprez_mcp.auth import BearerToken
 from xprez_mcp.checks import check_servers
 from xprez_mcp.core.context import CallContext
-from xprez_mcp.permissions import (
-    allow_any,
-    allow_staff,
-    check_permission,
-    check_permission_names,
-)
+from xprez_mcp.permissions import allow_authenticated, allow_staff, check_permission
 
 from .test_protocol import MCPTestCase
 
@@ -27,52 +22,63 @@ class ServerAccessTests(MCPTestCase):
             response = self.post(PING)
         self.assertEqual(response.status_code, 403)
 
-    def test_permission_string(self):
-        settings = {"TOKEN_RESOLVER": RESOLVER, "PERMISSION": "auth.view_user"}
+    def test_dotted_path_to_a_project_function(self):
+        settings = {
+            "TOKEN_RESOLVER": RESOLVER,
+            "PERMISSION": "xprez_mcp.tests.testapp.access.can_view_users",
+        }
         with override_settings(XPREZ_MCP=settings):
             self.assertEqual(self.post(PING).status_code, 403)
+            # bob has auth.view_user
             self.assertEqual(self.post(PING, token="token-bob").status_code, 200)
 
     def test_checked_before_initialize(self):
         settings = {
             "TOKEN_RESOLVER": RESOLVER,
-            "PERMISSION_CALLBACK": "xprez_mcp.permissions.allow_staff",
+            "PERMISSION": "xprez_mcp.permissions.allow_staff",
         }
         message = {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}
         with override_settings(XPREZ_MCP=settings):
             self.assertEqual(self.post(message).status_code, 403)
 
-    def test_permission_and_callback_both_required(self):
-        settings = {
-            "TOKEN_RESOLVER": RESOLVER,
-            "PERMISSION": "auth.change_user",
-            "PERMISSION_CALLBACK": "xprez_mcp.permissions.allow_staff",
-        }
-        with override_settings(XPREZ_MCP=settings):
-            # bob is staff but lacks auth.change_user
-            self.assertEqual(self.post(PING, token="token-bob").status_code, 403)
-            self.staff.user_permissions.add(
-                Permission.objects.get(codename="change_user")
-            )
-            self.assertEqual(self.post(PING, token="token-bob").status_code, 200)
-
-    def test_server_argument_replaces_both_settings(self):
-        server = MCPServer(name="x", permission_callback=allow_staff)
-        self.assertIsNone(server.permission)
-        self.assertIs(server.permission_callback, allow_staff)
-        server = MCPServer(name="x", permission="auth.view_user")
-        self.assertEqual(server.permission, "auth.view_user")
-        self.assertIsNone(server.permission_callback)
+    def test_server_argument_replaces_the_setting(self):
+        self.assertIs(
+            MCPServer(name="x", permission=allow_staff).permission, allow_staff
+        )
+        server = MCPServer(name="x", permission="xprez_mcp.permissions.allow_staff")
+        self.assertIs(server.permission, allow_staff)
         default = MCPServer(name="y")
-        self.assertIsNone(default.permission)
-        self.assertEqual(default.permission_callback.__name__, "allow_authenticated")
+        self.assertEqual(default.permission.__name__, "allow_authenticated")
 
-    def test_server_permission_takes_names_only(self):
-        server = MCPServer(name="x", permission=allow_staff)
-        with self.assertRaisesMessage(ImproperlyConfigured, "permission_callback"):
-            server.has_access(CallContext(server=server))
+    def test_true_and_false(self):
+        anonymous = CallContext(server=None)
+        self.assertTrue(MCPServer(name="x", permission=True).permission(anonymous))
+        closed = MCPServer(name="x", permission=False)
+        self.assertFalse(closed.has_access(CallContext(server=closed, user=self.staff)))
+        with override_settings(
+            XPREZ_MCP={"TOKEN_RESOLVER": RESOLVER, "PERMISSION": True}
+        ):
+            self.assertEqual(self.post(PING).status_code, 200)
+        with override_settings(
+            XPREZ_MCP={"TOKEN_RESOLVER": RESOLVER, "PERMISSION": False}
+        ):
+            self.assertEqual(self.post(PING, token="token-bob").status_code, 403)
+            ids = [e.id for e in check_servers() if e.obj.name == "django"]
+        self.assertEqual(ids, [])  # closed on purpose: no E001
 
-    def test_anonymous_needs_allow_any(self):
+    def test_only_a_function(self):
+        for permission, message in (
+            ("auth.view_user", "Cannot import the server permission"),
+            (["auth.view_user"], "Invalid server permission"),
+            ("xprez_mcp.tests.testapp.access.NOT_CALLABLE", "is not callable"),
+        ):
+            with self.subTest(permission=permission):
+                server = MCPServer(name="x", permission=permission)
+                with self.assertRaisesMessage(ImproperlyConfigured, message) as raised:
+                    server.permission
+                self.assertIn("ctx.user.has_perm(", str(raised.exception))
+
+    def test_anonymous_needs_true(self):
         response = self.post(PING, token=None, url="/open/mcp/")
         self.assertEqual(response.status_code, 200)
         server = MCPServer(name="z", authentication=[], allow_anonymous=True)
@@ -84,7 +90,7 @@ class ServerAccessTests(MCPTestCase):
             name="public",
             authentication=[BearerToken(resolver=lambda request, token: None)],
             allow_anonymous=True,
-            permission_callback=allow_any,
+            permission=True,
         )
         view = server.get_view()
         body = json.dumps(PING)
@@ -116,7 +122,8 @@ class PermissionTests(SimpleTestCase):
                 return True
 
         user = User()
-        self.assertTrue(check_permission(allow_any, self.ctx()))
+        self.assertTrue(check_permission(lambda ctx: True, self.ctx()))
+        self.assertFalse(check_permission(allow_authenticated, self.ctx()))
         self.assertFalse(check_permission(allow_staff, self.ctx(user)))
         self.assertFalse(check_permission("a.b", self.ctx()))
         self.assertTrue(check_permission(["a.b", "c.d"], self.ctx(user)))
@@ -126,9 +133,8 @@ class PermissionTests(SimpleTestCase):
             with self.assertRaisesMessage(ImproperlyConfigured, "allow_staff"):
                 check_permission(permission, self.ctx())
 
-    def test_names_only(self):
-        with self.assertRaisesMessage(ImproperlyConfigured, "permission_callback"):
-            check_permission_names(allow_staff, self.ctx())
+    def test_none_allows(self):
+        self.assertTrue(check_permission(None, self.ctx()))
 
 
 class CheckTests(SimpleTestCase):
@@ -144,6 +150,12 @@ class CheckTests(SimpleTestCase):
         # every mounted server relies on the setting except "open"
         self.assertLessEqual({"django", "staff", "models", "generic"}, names)
         self.assertNotIn("open", names)
+
+    def test_invalid_permission(self):
+        with override_settings(XPREZ_MCP={"PERMISSION": "auth.view_user"}):
+            errors = [error for error in check_servers() if error.obj.name == "django"]
+        self.assertEqual([error.id for error in errors], ["xprez_mcp.E004"])
+        self.assertIn("has_perm", errors[0].msg)
 
     def test_unmounted_servers_ignored(self):
         server = MCPServer(name="unmounted")

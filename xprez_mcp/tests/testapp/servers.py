@@ -1,7 +1,6 @@
 """Extra servers: a curated one and one without authentication."""
 
 from xprez_mcp import MCPServer, auth
-from xprez_mcp.permissions import allow_any
 
 from .mcp import StaffProvider
 
@@ -11,7 +10,7 @@ staff_mcp = MCPServer(
 staff_mcp.register(StaffProvider)
 
 open_mcp = MCPServer(
-    name="open", authentication=[], allow_anonymous=True, permission_callback=allow_any
+    name="open", authentication=[], allow_anonymous=True, permission=True
 )
 
 

@@ -38,7 +38,7 @@ from .errors import (
     ToolError,
 )
 from .integrations import drf
-from .permissions import check_permission, check_permission_names
+from .permissions import check_permission, resolve_server_permission
 from .providers.base import Provider
 
 logger = logging.getLogger("xprez_mcp")
@@ -80,7 +80,6 @@ class MCPServer:
         instructions=None,
         authentication=None,
         permission=None,
-        permission_callback=None,
         allow_anonymous=False,
         allowed_origins=None,
         exclude=(),
@@ -98,7 +97,6 @@ class MCPServer:
         self.instructions = instructions
         self.authentication = authentication
         self._permission = permission
-        self._permission_callback = permission_callback
         self.allow_anonymous = allow_anonymous
         self._allowed_origins = allowed_origins
         self.exposure = exposure
@@ -130,25 +128,17 @@ class MCPServer:
     def version(self):
         return self._version or conf.get("VERSION")
 
-    def _permission_arguments(self):
-        # Either server argument replaces both settings, so a server never
-        # inherits half of the project's access rule.
-        if self._permission is not None or self._permission_callback is not None:
-            return self._permission, self._permission_callback
-        return conf.get("PERMISSION"), conf.get("PERMISSION_CALLBACK")
-
     @property
     def permission(self):
-        """Django permission names required to use the server."""
-        return self._permission_arguments()[0]
+        """``f(ctx) -> bool`` deciding who may use the server, or None (nobody).
 
-    @property
-    def permission_callback(self):
-        """``f(ctx) -> bool`` required to use the server; dotted paths are imported."""
-        callback = self._permission_arguments()[1]
-        if isinstance(callback, str):
-            callback = import_string(callback)
-        return callback
+        ``MCPServer(permission=...)``, else ``XPREZ_MCP["PERMISSION"]``; a dotted
+        path is imported.
+        """
+        permission = self._permission
+        if permission is None:
+            permission = conf.get("PERMISSION")
+        return resolve_server_permission(permission)
 
     @property
     def list_page_size(self):
@@ -440,14 +430,10 @@ class MCPServer:
         return None
 
     def has_access(self, ctx):
-        """Who may use the server, checked before any method. Both the permission
-        and the callback must pass when set; with neither, nobody gets in."""
-        permission, callback = self.permission, self.permission_callback
-        if permission is None and callback is None:
-            return False
-        return check_permission_names(permission, ctx) and (
-            callback is None or bool(callback(ctx))
-        )
+        """Who may use the server, checked before any method; without a
+        permission, nobody gets in."""
+        permission = self.permission
+        return permission is not None and bool(permission(ctx))
 
     def get_context(self, request, user, protocol_version=None, meta=None):
         return self.context_class(

@@ -83,7 +83,7 @@ class TransportTests(MCPTestCase):
         with override_settings(
             XPREZ_MCP={
                 "TOKEN_RESOLVER": "xprez_mcp.tests.testapp.tokens.resolve",
-                "PERMISSION_CALLBACK": "xprez_mcp.permissions.allow_authenticated",
+                "PERMISSION": "xprez_mcp.permissions.allow_authenticated",
                 "ALLOWED_ORIGINS": ["https://app.example"],
             }
         ):

@@ -6,9 +6,9 @@ repeatedly and quickly. Go through this list before exposing a server.
 
 ## Access
 
-- [ ] The server rule is `allow_staff`, a project function or a project
-  permission; `allow_authenticated` or `allow_any` only when that is really
-  the audience.
+- [ ] The server rule is `allow_staff` or a project function (which may
+  check a project permission); `allow_authenticated` or `True`
+  only when that is really the audience.
 - [ ] `manage.py check` passes (`xprez_mcp.E001`: a server without a
   permission).
 - [ ] `./manage.py mcp_inspect --user <user>` was run for a typical user and

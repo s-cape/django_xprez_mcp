@@ -8,7 +8,6 @@ from django.test import SimpleTestCase, override_settings
 
 from xprez_mcp import InvalidName, MCPServer, ModelProvider, Provider, tool
 from xprez_mcp.checks import check_names
-from xprez_mcp.permissions import allow_any
 from xprez_mcp.server import MCPServer as ServerClass
 
 from .test_models import ModelTestCase
@@ -30,7 +29,7 @@ class PaginationTests(MCPTestCase):
         with override_settings(
             XPREZ_MCP={
                 "NAME": "test",
-                "PERMISSION_CALLBACK": "xprez_mcp.permissions.allow_authenticated",
+                "PERMISSION": "xprez_mcp.permissions.allow_authenticated",
                 "TOKEN_RESOLVER": "xprez_mcp.tests.testapp.tokens.resolve",
                 "EXCLUDE": ["hidden_*"],
                 "LIST_PAGE_SIZE": 2,
@@ -50,7 +49,7 @@ class PaginationTests(MCPTestCase):
         self.assertEqual(error["code"], -32602)
 
     def test_server_argument(self):
-        server = MCPServer(list_page_size=1, permission_callback=allow_any)
+        server = MCPServer(list_page_size=1, permission=True)
 
         @server.prompt
         def first(ctx):
@@ -70,7 +69,7 @@ class PaginationTests(MCPTestCase):
 
 class NameTests(SimpleTestCase):
     def server(self, name):
-        server = MCPServer(permission_callback=allow_any)
+        server = MCPServer(permission=True)
         server.tool(lambda ctx: None, name=name)
         return server
 
@@ -94,7 +93,7 @@ class NameTests(SimpleTestCase):
         self.assertEqual(check_names(self.server("a" * 40)), [])
 
     def test_resources_follow_uri_rules(self):
-        server = MCPServer(permission_callback=allow_any)
+        server = MCPServer(permission=True)
         server.resource("app://notes/v1.0")(lambda ctx: "x")
         self.assertIn("app://notes/v1.0", server.catalog["resource"])
 
@@ -147,7 +146,7 @@ class ThirdPartyWriteTests(ModelTestCase):
         self.assertIn("(withheld: ALLOW_WRITES)", out.getvalue())
 
     def test_project_apps_unaffected(self):
-        server = MCPServer(permission_callback=allow_any)
+        server = MCPServer(permission=True)
 
         @server.tool
         def write(ctx):  # this test module is not inside an installed app
@@ -183,6 +182,6 @@ class ExposureTests(SimpleTestCase):
             def change(self, ctx):
                 return "ok"
 
-        server = MCPServer(permission_callback=allow_any)
+        server = MCPServer(permission=True)
         server.register(Writer)
         self.assertIn("change", server.catalog["tool"])

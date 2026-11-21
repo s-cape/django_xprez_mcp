@@ -18,7 +18,7 @@ PING = {"jsonrpc": "2.0", "id": 1, "method": "ping"}
 # the test settings without TOKEN_RESOLVER: the installed app resolves keys
 STORED = {
     "NAME": "test",
-    "PERMISSION_CALLBACK": "xprez_mcp.permissions.allow_authenticated",
+    "PERMISSION": "xprez_mcp.permissions.allow_authenticated",
 }
 ADMIN = "/token-admin/"
 

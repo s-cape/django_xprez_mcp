@@ -14,12 +14,14 @@ Breaking in 0.6:
 
 - A permission is Django permission names or a callable, nothing else. The
   shorthand strings `"staff"`, `"authenticated"` and `"any"` are gone (they
-  raise `ImproperlyConfigured`); pass `xprez_mcp.permissions.allow_staff`,
-  `allow_authenticated` or `allow_any` instead. In settings, which cannot
-  hold project functions comfortably, a callable is the new
-  `PERMISSION_CALLBACK` (a dotted path). The server's `PERMISSION` /
-  `permission=` takes Django permission names only; its callable is
-  `permission_callback=`.
+  raise `ImproperlyConfigured`); pass `xprez_mcp.permissions.allow_staff` or
+  `allow_authenticated` instead, and for "anyone" `True` as the server
+  permission (an item without a permission is already open).
+- Server access (`PERMISSION`, `MCPServer(permission=...)`) is a function
+  `f(ctx) -> bool`, its dotted path, or `True` / `False`, nothing else. `"PERMISSION":
+  "crm.use_mcp"` no longer works (it fails `manage.py check` with
+  `xprez_mcp.E004`); check the permission in a function:
+  `def can_use(ctx): return ctx.user.has_perm("crm.use_mcp")`.
 - File fields (`FileField`, `ImageField`) are writable, so they join the
   default `write_fields` and the admin's writable fields; a file field without
   `blank=True` is a required argument of `create`.
@@ -564,31 +566,34 @@ A permission is one of two things, with one meaning each:
   required (`user.has_perms`). A string without a dot raises
   `ImproperlyConfigured`.
 - A callable `permission(ctx) -> bool`. Common ones ship in
-  `xprez_mcp.permissions`: `allow_staff`, `allow_authenticated`, `allow_any`.
+  `xprez_mcp.permissions`: `allow_staff`, `allow_authenticated`.
 
 Items (`@tool(permission=...)`, `ModelProvider.permissions`) take either in
-one argument: in Python the type tells them apart. Server access keeps them
-in separate keys, because settings name a function by its dotted path, which
-would read like a permission name.
+one argument: in Python the type tells them apart.
 
 ### Server access
 
-```python
-XPREZ_MCP = {
-    "PERMISSION": "crm.use_mcp",                          # Django permission names
-    "PERMISSION_CALLBACK": "crm.mcp_access.can_use_mcp",  # dotted path to f(ctx) -> bool
-}
+Server access is a function only, because settings name a function by its
+dotted path, and `"crm.use_mcp"` would read as either. Django permissions are
+checked inside it.
 
-sales_mcp = MCPServer(name="sales", permission="crm.use_sales_mcp")
-staff_mcp = MCPServer(name="staff", permission_callback=allow_staff)  # or a dotted path
+```python
+# crm/mcp_access.py
+def can_use_mcp(ctx):
+    return ctx.user.is_staff and ctx.user.has_perm("crm.use_mcp")
+
+XPREZ_MCP = {"PERMISSION": "crm.mcp_access.can_use_mcp"}  # dotted path
+
+staff_mcp = MCPServer(name="staff", permission=allow_staff)  # or a dotted path
 ```
 
-- No default: set either or both. When both are set, both must pass.
-- `PERMISSION` / `permission=` takes Django permission names only; a callable
-  there raises `ImproperlyConfigured` pointing to `permission_callback`.
-- Either server argument replaces both settings, so a server never inherits
-  half of the project's rule (a public server with `allow_any` is not still
-  held to a project-wide `allow_authenticated`).
+- No default. `MCPServer(permission=...)` replaces the setting.
+- `True` lets everyone in; `False` lets nobody in, like
+  no permission, but on purpose, so it does not raise `xprez_mcp.E001`.
+- Anything but those, a callable or the dotted path of one (a permission
+  name, a list) raises `ImproperlyConfigured` with an example function, and a
+  mounted server with such a value fails `manage.py check`
+  (`xprez_mcp.E004`).
 
 - Checked after authentication and before any method, `initialize` included.
   A user who fails it gets `403`, so the client fails when it connects
@@ -597,9 +602,9 @@ staff_mcp = MCPServer(name="staff", permission_callback=allow_staff)  # or a dot
   error (`xprez_mcp.E001`) fails `manage.py check`, `runserver` and tests, and
   the server answers `403` in case checks are skipped.
 - Opening up is explicit and visible in review: `allow_authenticated`,
-  `allow_staff` or `allow_any`. `allow_anonymous=True` also needs
-  `allow_any` (or a callable that accepts `ctx.user` being None); on its own
-  it does not open the server.
+  `allow_staff` or `True`. `allow_anonymous=True` also needs `True` (or a
+  callable that accepts `ctx.user` being None); on its own it does not open
+  the server.
 - The checks cover servers mounted in the URLconf, so an unused default `mcp`
   does not fail them.
 - No bundled `use_mcp` permission: that would need a model and a migration.
@@ -865,8 +870,7 @@ authenticate with.
 XPREZ_MCP = {
     "NAME": "django",              # serverInfo.name of the default server
     "VERSION": "0.0.0",
-    "PERMISSION": None,            # Django permission names; see Permissions
-    "PERMISSION_CALLBACK": None,   # "myapp.mcp_access.can_use"; one of the two is required
+    "PERMISSION": None,            # required: "myapp.mcp_access.can_use", f(ctx) -> bool
     "AUTODISCOVER": True,
     "AUTODISCOVER_MODULE": "mcp",
     "AUTHENTICATION": ["xprez_mcp.auth.bearer_token"],
@@ -882,10 +886,9 @@ XPREZ_MCP = {
 
 With several servers, the settings are defaults:
 
-- `NAME`, `VERSION`, `AUTHENTICATION`, `ALLOWED_ORIGINS`, `LIST_PAGE_SIZE`
-  and `RELATED_LABELS` are replaced by the matching `MCPServer` argument.
-  `PERMISSION` and `PERMISSION_CALLBACK` are replaced together when the
-  server passes either one.
+- `NAME`, `VERSION`, `AUTHENTICATION`, `PERMISSION`, `ALLOWED_ORIGINS`,
+  `LIST_PAGE_SIZE` and `RELATED_LABELS` are replaced by the matching
+  `MCPServer` argument.
   `ALLOW_WRITES` is combined with the server's `allow_writes`.
 - `EXCLUDE` and `EXCLUDE_APPS` are combined with the server's `exclude` /
   `exclude_apps`. A server can exclude more but never bring back what the

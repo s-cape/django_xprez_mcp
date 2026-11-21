@@ -19,7 +19,7 @@ INSTALLED_APPS = [
 
 XPREZ_MCP = {
     # required: who may use the server at all
-    "PERMISSION_CALLBACK": "xprez_mcp.permissions.allow_staff",
+    "PERMISSION": "xprez_mcp.permissions.allow_staff",
 }
 ```
 
@@ -38,31 +38,30 @@ urlpatterns = [
 ./manage.py migrate
 ```
 
-The server has no default rule: without one, `manage.py check` fails with
-`xprez_mcp.E001` and the endpoint answers `403`. Set one of:
+`PERMISSION` is a function deciding who may use the server, given by its
+dotted path, or `True` / `False`. It has no default: without it, `manage.py check` fails with
+`xprez_mcp.E001` and the endpoint answers `403`.
 
-| Setting | Value | Who gets in |
-|---|---|---|
-| `PERMISSION_CALLBACK` | `"xprez_mcp.permissions.allow_staff"` | staff users |
-| | `"xprez_mcp.permissions.allow_authenticated"` | every authenticated user |
-| | `"myapp.mcp_access.can_use_mcp"` | whoever your function returns `True` for |
-| `PERMISSION` | `"myapp.use_mcp"` | users with that Django permission |
-| | `["myapp.use_mcp", "myapp.view_note"]` | users with all of them |
+| `PERMISSION` | Who gets in |
+|---|---|
+| `"xprez_mcp.permissions.allow_staff"` | staff users |
+| `"xprez_mcp.permissions.allow_authenticated"` | every authenticated user |
+| `"myapp.mcp_access.can_use_mcp"` | whoever your function returns `True` for |
+| `True` | everyone who authenticates (and anonymous callers with `allow_anonymous=True`) |
+| `False` | nobody: the server is closed on purpose |
 
-With both set, both must pass.
-
-A function of your own takes the call context:
+A function of your own takes the call context and returns a boolean. To
+require a Django permission, check it there:
 
 ```python
 # myapp/mcp_access.py
 def can_use_mcp(ctx):
-    return ctx.user.groups.filter(name="mcp").exists()
+    return ctx.user.is_staff and ctx.user.has_perm("myapp.use_mcp")
 ```
 
-A Django permission (`"<app_label>.<codename>"`, checked with
-`user.has_perm()`) is granted in the admin like any other; superusers have
-it implicitly. The library ships none, so declare it on a model of your app
-and migrate:
+A Django permission (`"<app_label>.<codename>"`) is granted in the admin like
+any other; superusers have it implicitly. The library ships none, so declare
+it on a model of your app and migrate:
 
 ```python
 # myapp/models.py
@@ -73,13 +72,13 @@ class Note(models.Model):
         permissions = [("use_mcp", "Can use the MCP server")]
 ```
 
-A server of your own takes the same two as arguments, a callable or a dotted
-path:
+A server of your own takes the function itself, or its dotted path:
 
 ```python
 from xprez_mcp import MCPServer
+from xprez_mcp.permissions import allow_staff
 
-sales_mcp = MCPServer(name="sales", permission_callback=lambda ctx: ctx.user.is_staff)
+staff_mcp = MCPServer(name="staff", permission=allow_staff)
 ```
 
 Users who fail the check get `403` when the client connects. Which tools

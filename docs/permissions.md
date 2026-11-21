@@ -7,7 +7,7 @@ section of [design.md](design.md).
 | Layer | Fails with | Configure with |
 |---|---|---|
 | Authentication | `401` | `AUTHENTICATION`, `TOKEN_RESOLVER` |
-| Server permission | `403`, before `initialize` | `PERMISSION` / `PERMISSION_CALLBACK`, `MCPServer(permission=..., permission_callback=...)` |
+| Server permission | `403`, before `initialize` | `PERMISSION`, `MCPServer(permission=...)` (a function) |
 | Provider | items hidden | `Provider.has_permission(ctx)` |
 | Item or action | item hidden | `@tool(permission=...)`, `ModelProvider.permissions` |
 | Rows | not found | `get_queryset(ctx)` |
@@ -24,21 +24,24 @@ A permission is one of:
 - Django permission names: `"crm.change_client"` or a list of them, all
   required (`user.has_perms`),
 - a callable: `lambda ctx: ctx.user.is_superuser`, or one of
-  `xprez_mcp.permissions.allow_staff`, `allow_authenticated`, `allow_any`.
+  `xprez_mcp.permissions.allow_staff`, `allow_authenticated`.
 
-Items take either in `permission=`. The server keeps them apart:
-`PERMISSION` / `permission=` for names, `PERMISSION_CALLBACK` /
-`permission_callback=` for the callable (a dotted path in settings).
+Items take either in `permission=`. Server access takes a function only
+(`PERMISSION` / `MCPServer(permission=...)`, a dotted path in settings),
+because in settings a permission name would read like a dotted path. Check
+Django permissions inside that function.
 
 ## Recipes
 
 Only staff with a project permission may connect:
 
 ```python
-XPREZ_MCP = {
-    "PERMISSION": "crm.use_mcp",
-    "PERMISSION_CALLBACK": "xprez_mcp.permissions.allow_staff",
-}
+# crm/mcp_access.py
+def can_use_mcp(ctx):
+    return ctx.user.is_staff and ctx.user.has_perm("crm.use_mcp")
+
+# settings.py
+XPREZ_MCP = {"PERMISSION": "crm.mcp_access.can_use_mcp"}
 ```
 
 A whole provider for one group:

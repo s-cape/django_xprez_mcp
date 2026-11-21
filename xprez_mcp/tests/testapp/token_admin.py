@@ -15,6 +15,6 @@ site.register(User, UserAdmin)
 site.register(Token, TokenAdmin)
 
 token_admin_mcp = MCPServer(
-    name="token-admin", permission_callback=allow_staff, exposure="generic"
+    name="token-admin", permission=allow_staff, exposure="generic"
 )
 token_admin_mcp.register_admin(site)
