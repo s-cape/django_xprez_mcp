@@ -1,6 +1,7 @@
 """``ModelProvider``: tools and resources generated from a Django model."""
 
 import base64
+import logging
 import inspect
 import mimetypes
 import posixpath
@@ -8,6 +9,7 @@ from contextlib import contextmanager
 from functools import cached_property
 from typing import Annotated, Any, Literal, Optional
 
+from django.apps import apps
 from django.core.exceptions import (
     FieldDoesNotExist,
     ImproperlyConfigured,
@@ -38,6 +40,8 @@ from .fields import (
     upload_prefix,
     write_parameter,
 )
+
+logger = logging.getLogger("xprez_mcp")
 
 ACTIONS = ("list", "get", "create", "update", "delete")
 WRITE_ACTIONS = ("create", "update", "delete")
@@ -633,7 +637,10 @@ class ModelProvider(Provider):
         except BaseException:
             for upload in uploads:
                 if upload._committed and upload.name:
-                    upload.storage.delete(upload.name)
+                    try:
+                        upload.storage.delete(upload.name)
+                    except Exception:  # keep the error that failed the write
+                        logger.exception("Could not delete %s", upload.name)
             raise
 
     def stored_file(self, ctx, field, path):
@@ -648,6 +655,10 @@ class ModelProvider(Provider):
                 raise ToolError(f"{field.name}: path {path!r} is not allowed.")
             if prefix is None:
                 raise ToolError(f"{field.name} does not accept stored paths.")
+            if path.startswith(prefix):
+                raise ToolError(
+                    f"{field.name}: {path!r} is in another file field's folder."
+                )
             raise ToolError(f"{field.name}: path must be under {prefix!r}.")
         storage = field.storage
         try:
@@ -670,12 +681,24 @@ class ModelProvider(Provider):
         return field.attr_class(None, field, path)
 
     def allows_file_path(self, ctx, field, path):
-        """Whether ``path`` may be referenced: by default only files under the
-        static folder of the field's ``upload_to``, where its own uploads go,
-        so a record cannot point at another field's (private) files. A
-        callable or empty ``upload_to`` accepts no path until overridden."""
+        """Whether ``path`` may be referenced. By default: under the static
+        folder of the field's ``upload_to``, where its own uploads go, and not
+        under a deeper folder of another file field (``docs/private`` inside
+        ``docs``). A callable or empty ``upload_to`` accepts no path until
+        overridden.
+
+        The default does not know who owns a file: every file in that folder
+        can be referenced, other records' included, and so can those of other
+        fields that share the exact folder. Override for anything stricter.
+        """
         prefix = upload_prefix(field)
-        return prefix is not None and path.startswith(prefix)
+        if prefix is None or not path.startswith(prefix):
+            return False
+        return not any(
+            path.startswith(other)
+            for other in _other_upload_prefixes(field)
+            if len(other) > len(prefix) and other.startswith(prefix)
+        )
 
     def fetch_file(self, ctx, field, url):
         """``(content, name, content_type)`` for a ``url`` argument.
@@ -1054,13 +1077,30 @@ def _decode_cursor(cursor):
 
 
 def _is_serializer_file_field(field):
-    """A DRF ``FileField`` (``ImageField`` included); other serializer fields
-    on a model file field (base64 strings, URLs) keep their own values."""
+    """A DRF ``FileField`` or ``ImageField`` that takes uploads. Other fields
+    on a model file field keep their own values: strings, URLs, and subclasses
+    that read something else (``Base64ImageField`` and the like override
+    ``to_internal_value`` to decode a string)."""
     try:
-        from rest_framework.fields import FileField
+        from rest_framework.fields import FileField, ImageField
     except ImportError:
         return False
-    return isinstance(field, FileField)
+    if not isinstance(field, FileField):
+        return False
+    reads = type(field).to_internal_value
+    return reads in (FileField.to_internal_value, ImageField.to_internal_value)
+
+
+def _other_upload_prefixes(field):
+    """The upload prefixes of every other file field of installed models."""
+    prefixes = set()
+    for model in apps.get_models():
+        for other in model._meta.get_fields():
+            if isinstance(other, models.FileField) and other is not field:
+                prefix = upload_prefix(other)
+                if prefix:
+                    prefixes.add(prefix)
+    return prefixes
 
 
 def _supports_prefetch(instance, name):

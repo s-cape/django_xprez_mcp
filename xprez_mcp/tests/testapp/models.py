@@ -99,6 +99,8 @@ class Document(models.Model):
     title = models.CharField(max_length=100)
     file = models.FileField(upload_to="docs/")
     attachment = models.FileField(upload_to="attachments/", blank=True)
+    # nested in file's folder: file must not reach these through path
+    private = models.FileField(upload_to="docs/private", blank=True)
 
     def __str__(self):
         return self.title

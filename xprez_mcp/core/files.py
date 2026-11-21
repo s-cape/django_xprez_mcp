@@ -124,8 +124,12 @@ class FileArgument:
             )
         if source == "path":
             return FileValue("path", _storage_path(value["path"], path))
-        parts = urllib.parse.urlsplit(value["url"])
-        if parts.scheme not in ("http", "https") or not parts.hostname:
+        try:
+            parts = urllib.parse.urlsplit(value["url"])
+            valid = parts.scheme in ("http", "https") and bool(parts.hostname)
+        except ValueError:  # e.g. "http://[abc/x": an unclosed IPv6 host
+            valid = False
+        if not valid:
             raise InvalidArguments(f"{path}.url must be an http or https URL.")
         return FileValue("url", value["url"])
 
@@ -138,15 +142,21 @@ def file_argument(sources=DEFAULT_SOURCES, nullable=False):
 # --- fetching ----------------------------------------------------------------
 
 
-_NAT64 = ipaddress.ip_network("64:ff9b::/96")  # embeds any IPv4 address
+# IPv6 ranges whose low 32 bits are an IPv4 address a gateway may forward to
+_EMBEDDING = (
+    ipaddress.ip_network("64:ff9b::/96"),  # NAT64
+    ipaddress.ip_network("::/96"),  # IPv4-compatible (deprecated)
+    ipaddress.ip_network("::ffff:0:0:0/96"),  # IPv4-translated (SIIT)
+)
 _LOCAL_NAT64 = ipaddress.ip_network("64:ff9b:1::/48")
 
 
 def is_public_address(address):
     """Whether the server may connect to ``address`` when fetching a URL.
 
-    IPv6 forms that carry an IPv4 address (mapped, 6to4, Teredo, NAT64) are
-    judged by that address: a gateway forwards them to it, internal or not.
+    IPv6 forms that carry an IPv4 address (mapped, compatible, translated,
+    6to4, Teredo, NAT64) are judged by that address: a gateway forwards them
+    to it, internal or not.
     """
     try:
         ip = ipaddress.ip_address(address.split("%", 1)[0])
@@ -156,7 +166,7 @@ def is_public_address(address):
         if ip in _LOCAL_NAT64:
             return False
         embedded = [ip.ipv4_mapped, ip.sixtofour, *(ip.teredo or ())]
-        if ip in _NAT64:
+        if any(ip in network for network in _EMBEDDING):
             embedded.append(ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF))
         embedded = [address for address in embedded if address is not None]
         if embedded:
@@ -167,8 +177,10 @@ def is_public_address(address):
 def fetch(url, max_size=None, timeout=10):
     """``(content, name, content_type)`` of a public http(s) URL.
 
-    ``timeout`` bounds the whole fetch, redirects included, not only each
-    socket operation: a server sending a byte at a time cannot hold the worker.
+    ``timeout`` bounds connecting, redirects and reading together, not only
+    each socket operation: a server sending a byte at a time cannot hold the
+    worker. DNS lookups are not covered: they block in the system resolver,
+    which applies its own timeout.
     ``content_type`` is None when the response has none.
     """
     sockets, expired = [], threading.Event()

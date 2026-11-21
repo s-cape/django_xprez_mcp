@@ -409,8 +409,11 @@ therefore never adds a write tool on its own.
   `fieldsets` when an override needs a user), limited to editable model
   fields. Per call, sending a field that `get_fieldsets(request, obj)` or
   `get_readonly_fields(request, obj)` excludes is an error. Validation uses `get_form(request, obj, fields=sent)`
-  with the [file arguments](#file-arguments) as its `files` (the request
-  stays the call's shared one, so `request.FILES` is empty); then
+  with the [file arguments](#file-arguments) as its `files`. The request
+  stays the call's shared one, so `request.FILES` is empty here: admin code
+  reads uploads from the form (`form.cleaned_data`), not the request. Inline
+  writes differ: their formset is built from a request copy, which carries
+  the uploads in `FILES`. Then
   `save_form`, `save_model`, `save_related` (no formsets; inline rows have
   their own tools, below), and
   `log_addition` / `log_change` with `construct_change_message`, so the
@@ -571,6 +574,10 @@ A permission is the same everywhere (server access, `@tool(permission=...)`,
 @tool(permission=lambda ctx: ctx.user.has_perm("crm.delete_client"))
 ```
 
+`ctx.user` is None on anonymous calls (a server with `allow_anonymous=True`),
+so a permission on such a server checks it first:
+`lambda ctx: ctx.user is not None and ctx.user.has_perm(...)`.
+
 Common callables ship in `xprez_mcp.permissions`: `allow_staff`,
 `allow_authenticated`. No strings: in settings a permission name would read
 like a dotted path, and one rule for every place is easier to remember. A
@@ -714,7 +721,7 @@ null                                          // clear the field
 class DocumentProvider(ModelProvider):
     file_sources = ["data", "path", "url"]  # default ["data"]
     max_file_size = 10 * 1024 * 1024        # bytes, default 10 MiB; None: no limit
-    file_fetch_timeout = 10                 # seconds for the whole fetch
+    file_fetch_timeout = 10                 # seconds: connect, redirects and read
 ```
 
 - Leaving the argument out leaves the field unchanged on `update`. `null` is
@@ -739,21 +746,25 @@ class DocumentProvider(ModelProvider):
   `max_file_size` (`stored_file`). The file is referenced, not copied, and
   closed again after validation. `allows_file_path(ctx, field, path)` decides
   which paths a field accepts: by default those under the static part of its
-  `upload_to` (`"docs"` and `"docs/%Y/"` both give `docs/`), so a record
-  cannot point at another field's files. A callable or empty `upload_to`
-  accepts no path until `allows_file_path` is overridden, and an override's
-  refusal is reported as "path ... is not allowed". The default does not
-  know who owns a file, so any caller who can write the field can attach
-  another record's file under that prefix: turn `path` on only where stored
-  files are not private, or override `allows_file_path` with the project's
-  own rule.
+  `upload_to` (`"docs"` and `"docs/%Y/"` both give `docs/`), except paths
+  under a deeper folder of another file field of any installed model
+  (`docs/private/` inside `docs/`). A callable or empty `upload_to` accepts
+  no path until `allows_file_path` is overridden, and an override's refusal
+  is reported as "path ... is not allowed". The default does not know who
+  owns a file: any caller who can write the field can attach any file in
+  its folder, other records' included, and those of fields sharing the exact
+  folder. Turn `path` on only where those files are not private, or override
+  `allows_file_path` with the project's own rule.
 - `url` (opt-in, *experimental*) is fetched by `fetch_file(ctx, field, url)`: http and https
   only, no proxies, redirects followed, and every address connected to must
   be public (`ipaddress.is_global`), checked at connect time so redirects and
   DNS answers cannot reach internal hosts. IPv6 forms that carry an IPv4
-  address (IPv4-mapped, 6to4, Teredo, NAT64 `64:ff9b::/96`) are judged by
-  that address; local-use NAT64 (`64:ff9b:1::/48`) is refused. `file_fetch_timeout` bounds the
-  whole fetch, redirects and slow responses included. The name comes from the
+  address (IPv4-mapped, IPv4-compatible `::/96`, IPv4-translated
+  `::ffff:0:0:0/96`, 6to4, Teredo, NAT64 `64:ff9b::/96`) are judged by that
+  address; local-use NAT64 (`64:ff9b:1::/48`) is refused. A `url` that does
+  not parse is an `InvalidArguments`. `file_fetch_timeout` bounds connecting,
+  redirects and reading together, slow responses included; DNS lookups block
+  in the system resolver, which applies its own timeout. The name comes from the
   final URL (`download` when it has none, or is `.` or `..`; with an
   extension from the `Content-Type` header when the name has none and the
   header is sent), shortened to fit the field's `max_length` with its

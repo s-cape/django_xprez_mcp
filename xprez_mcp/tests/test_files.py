@@ -10,7 +10,7 @@ from unittest import mock
 from django.contrib.admin.models import ADDITION, CHANGE, LogEntry
 from django.contrib.auth.models import User
 from django.core.files.base import ContentFile
-from django.core.files.storage import default_storage
+from django.core.files.storage import FileSystemStorage, default_storage
 from django import forms
 from django.db import models
 from django.core.exceptions import ImproperlyConfigured
@@ -67,6 +67,10 @@ class FileArgumentTests(SimpleTestCase):
             "2002:7f00:1::1": False,  # 6to4 of 127.0.0.1
             "2001:0:4136:e378:8000:63bf:f5ff:fffe": False,  # Teredo, client 10.0.0.1
             "fe80::1%eth0": False,
+            "::7f00:1": False,  # IPv4-compatible 127.0.0.1
+            "::ffff:0:7f00:1": False,  # IPv4-translated 127.0.0.1
+            "::808:808": True,  # IPv4-compatible 8.8.8.8
+            "::": False,
             "not an address": False,
         }
         for address, public in cases.items():
@@ -189,6 +193,19 @@ class FileArgumentTests(SimpleTestCase):
         )
         self.assertIsNone(coerce(argument, None, "f"))
 
+    def test_malformed_url(self):
+        argument = file_argument(("url",))
+        for url in ("http://[abc/x", "http://[::1/x", "https://"):
+            with self.subTest(url=url):
+                with self.assertRaisesMessage(InvalidArguments, "http or https URL"):
+                    coerce(argument, {"url": url}, "f")
+
+    def test_permission_hint_handles_anonymous(self):
+        from xprez_mcp.permissions import validate_permission
+
+        with self.assertRaisesMessage(Exception, "ctx.user is not None and"):
+            validate_permission("crm.use_mcp")
+
     def test_invalid(self):
         argument = file_argument(("data", "path"), False)
         cases = {
@@ -290,6 +307,15 @@ class ModelProviderFileTests(FilesTestCase):
         )
         self.assertIn("no file at 'docs/x'", error)
 
+    def test_path_in_another_fields_nested_folder(self):
+        secret = default_storage.save("docs/private/contract.txt", ContentFile(b"s"))
+        error = self.failed(
+            "documents_update", {"id": self.document.pk, "file": {"path": secret}}
+        )
+        self.assertIn("is in another file field's folder", error)
+        self.document.refresh_from_db()
+        self.assertEqual(self.document.file.name, "docs/report.txt")
+
     def test_path_outside_upload_to(self):
         error = self.failed(
             "documents_update",
@@ -358,6 +384,22 @@ class ModelProviderFileTests(FilesTestCase):
         provider.validate(ctx, {"file": FileValue("data", b"x", "x.txt")})
         self.assertIsInstance(seen[0], MultiValueDict)
         self.assertEqual(seen[0].getlist("file")[0].name, "x.txt")
+
+    def test_cleanup_failure_keeps_the_original_error(self):
+        def perform_update(provider, ctx, instance, data):
+            DocumentProvider.perform_update(provider, ctx, instance, data)
+            raise ToolError("Rejected after the save.")
+
+        provider, ctx = self.provider(perform_update=perform_update)
+        broken = mock.patch.object(
+            FileSystemStorage, "delete", side_effect=OSError("storage down")
+        )
+        with broken, self.assertLogs("xprez_mcp", "ERROR") as logs:
+            with self.assertRaisesMessage(ToolError, "Rejected after the save."):
+                provider.run_update(
+                    ctx, id=self.document.pk, file=FileValue("data", b"x", "n.txt")
+                )
+        self.assertIn("Could not delete docs/n", logs.output[0])
 
     def test_failed_write_removes_the_upload(self):
         def perform_update(provider, ctx, instance, data):
@@ -492,6 +534,33 @@ class AdminFileTests(FilesTestCase):
         entry = LogEntry.objects.get(object_id=str(self.document.pk))
         self.assertEqual(entry.action_flag, CHANGE)
         self.assertIn("File", entry.get_change_message())
+
+    def test_request_files_on_main_and_inline_writes(self):
+        seen = {}
+        save_model = DocumentAdmin.save_model
+        save_formset = DocumentAdmin.save_formset
+
+        def record_model(model_admin, request, obj, form, change):
+            seen["model"] = list(request.FILES)
+            return save_model(model_admin, request, obj, form, change)
+
+        def record_formset(model_admin, request, form, formset, change):
+            seen["formset"] = list(request.FILES)
+            return save_formset(model_admin, request, form, formset, change)
+
+        upload = {"data": b64(b"x"), "name": "x.txt"}
+        with mock.patch.object(DocumentAdmin, "save_model", record_model):
+            with mock.patch.object(DocumentAdmin, "save_formset", record_formset):
+                self.structured(
+                    "documents_update", {"id": self.document.pk, "file": upload}
+                )
+                self.structured(
+                    "documents_pages_create",
+                    {"parent": self.document.pk, "number": 1, "scan": upload},
+                )
+        # as documented: the shared request has no FILES, the inline copy has
+        self.assertEqual(seen["model"], [])
+        self.assertEqual(seen["formset"], ["pages-0-scan"])
 
     def test_admin_code_shares_the_request(self):
         seen = []
@@ -686,6 +755,36 @@ class SerializerFileTests(FilesTestCase):
         # ModelSerializer allows null only for null=True model fields
         self.assertFalse(nullable(Strict))
         self.assertTrue(nullable(Lenient))
+
+    def test_upload_fields_only(self):
+        from rest_framework import serializers
+
+        from xprez_mcp.providers.model import _is_serializer_file_field
+
+        class Base64File(serializers.FileField):
+            """Like drf-extra-fields' Base64FileField: decodes a string."""
+
+            def to_internal_value(self, data):
+                return data
+
+        self.assertTrue(_is_serializer_file_field(serializers.FileField()))
+        self.assertTrue(_is_serializer_file_field(serializers.ImageField()))
+        self.assertFalse(_is_serializer_file_field(Base64File()))
+        self.assertFalse(_is_serializer_file_field(serializers.CharField()))
+
+        class Base64Serializer(serializers.ModelSerializer):
+            file = Base64File()
+
+            class Meta:
+                model = Document
+                fields = ["id", "title", "file"]
+
+        provider_class = type(
+            "Provider", (ModelProvider,), {"serializer": Base64Serializer}
+        )
+        provider = provider_class(MCPServer(name="drf-b64-file"), model=Document)
+        params = {name: ann for name, ann, _ in provider.write_parameters(True)}
+        self.assertIs(params["file"], str)
 
     def test_non_file_serializer_field_keeps_its_value(self):
         from rest_framework import serializers

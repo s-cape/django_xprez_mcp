@@ -23,6 +23,8 @@ A permission is the same everywhere (server access, items, model actions):
 a callable `f(ctx) -> bool`, `True` or `False`. No strings: check a Django
 permission inside the callable, `lambda ctx: ctx.user.has_perm("crm.change_client")`.
 `xprez_mcp.permissions` ships `allow_staff` and `allow_authenticated`.
+`ctx.user` is None on anonymous calls (`allow_anonymous=True`), so there
+check it first: `ctx.user is not None and ctx.user.has_perm(...)`.
 
 ## Recipes
 
