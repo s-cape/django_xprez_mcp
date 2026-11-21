@@ -28,7 +28,7 @@ from ..core import schema
 from ..core.files import DEFAULT_SOURCES, SOURCES, FileValue
 from ..core.items import Item, ResourceSpec, ToolSpec
 from ..errors import InvalidArguments, ToolError
-from ..permissions import check_permission
+from ..permissions import allows, validate_permission
 from .base import Provider
 from .fields import (
     base_annotation,
@@ -42,6 +42,14 @@ from .fields import (
 ACTIONS = ("list", "get", "create", "update", "delete")
 WRITE_ACTIONS = ("create", "update", "delete")
 EXPOSURES = ("tools", "generic")
+# any one suffices: like the admin, change permission also lets you read
+MODEL_PERMISSIONS = {
+    "list": ("view", "change"),
+    "get": ("view", "change"),
+    "create": ("add",),
+    "update": ("change",),
+    "delete": ("delete",),
+}
 RESERVED_ARGUMENTS = {"query", "limit", "cursor", "ordering"}
 
 HINTS = {
@@ -162,14 +170,9 @@ class ModelProvider(Provider):
     max_file_size = 10 * 1024 * 1024  # bytes, uploads and fetches; None: no limit
     file_fetch_timeout = 10  # seconds
 
-    # Admin-style preset: permissions = ModelProvider.django_model_permissions
-    django_model_permissions = {
-        "list": "{app_label}.view_{model_name}",
-        "get": "{app_label}.view_{model_name}",
-        "create": "{app_label}.add_{model_name}",
-        "update": "{app_label}.change_{model_name}",
-        "delete": "{app_label}.delete_{model_name}",
-    }
+    # require the model's view/add/change/delete permission per action, as
+    # the admin does, on top of permissions
+    model_permissions = False
 
     def __init__(self, server, model=None):
         super().__init__(server, model=model or type(self).model)
@@ -199,6 +202,7 @@ class ModelProvider(Provider):
         unknown = set(self.actions) - set(ACTIONS)
         if unknown:
             raise ImproperlyConfigured(f"{label}: unknown actions {sorted(unknown)}.")
+        self.get_permissions()  # raises on a value that is not a permission
         if self.exposure is not None and self.exposure not in EXPOSURES:
             raise ImproperlyConfigured(
                 f"{label}: exposure must be one of {EXPOSURES} or None."
@@ -308,17 +312,23 @@ class ModelProvider(Provider):
     # --- permissions --------------------------------------------------------
 
     def get_permissions(self):
-        """``permissions`` with ``{app_label}`` and ``{model_name}`` filled in."""
-        names = {"app_label": self.opts.app_label, "model_name": self.opts.model_name}
+        """``permissions``, each validated: ``{action: f(ctx) -> bool or bool}``."""
+        label = type(self).__qualname__
+        return {
+            action: validate_permission(value, f"{label}.permissions[{action!r}]")
+            for action, value in self.permissions.items()
+        }
 
-        def fill(permission):
-            if isinstance(permission, str):
-                return permission.format(**names)
-            if isinstance(permission, (list, tuple)):
-                return [fill(item) for item in permission]
-            return permission
-
-        return {action: fill(value) for action, value in self.permissions.items()}
+    def has_model_permission(self, ctx, action):
+        """The model permission the admin requires for ``action``."""
+        codenames = MODEL_PERMISSIONS.get(action)
+        if codenames is None:
+            return True
+        user = ctx.user
+        return user is not None and any(
+            user.has_perm(f"{self.opts.app_label}.{codename}_{self.opts.model_name}")
+            for codename in codenames
+        )
 
     def writes_allowed(self):
         """Writes of third-party providers need ``ALLOW_WRITES``."""
@@ -329,7 +339,9 @@ class ModelProvider(Provider):
             return False
         if action in WRITE_ACTIONS and not self.writes_allowed():
             return False
-        return check_permission(self.get_permissions().get(action), ctx)
+        if self.model_permissions and not self.has_model_permission(ctx, action):
+            return False
+        return allows(self.get_permissions().get(action), ctx)
 
     def has_object_permission(self, ctx, action, instance):
         return True

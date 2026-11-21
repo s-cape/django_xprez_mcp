@@ -38,7 +38,7 @@ from .errors import (
     ToolError,
 )
 from .integrations import drf
-from .permissions import resolve_server_permission
+from .permissions import allows, validate_permission
 from .providers.base import Provider
 
 logger = logging.getLogger("xprez_mcp")
@@ -130,15 +130,15 @@ class MCPServer:
 
     @property
     def permission(self):
-        """``f(ctx) -> bool`` deciding who may use the server, or None (nobody).
+        """Who may use the server: ``f(ctx) -> bool``, a bool, or None (nobody).
 
-        ``MCPServer(permission=...)``, else ``XPREZ_MCP["PERMISSION"]``; ``True``
-        and ``False`` become functions.
+        ``MCPServer(permission=...)``, else ``XPREZ_MCP["PERMISSION"]``; also
+        ``True`` (everyone) or ``False`` (nobody, on purpose).
         """
         permission = self._permission
         if permission is None:
             permission = conf.get("PERMISSION")
-        return resolve_server_permission(permission)
+        return validate_permission(permission, "server permission")
 
     @property
     def list_page_size(self):
@@ -433,7 +433,7 @@ class MCPServer:
         """Who may use the server, checked before any method; without a
         permission, nobody gets in."""
         permission = self.permission
-        return permission is not None and bool(permission(ctx))
+        return permission is not None and allows(permission, ctx)
 
     def get_context(self, request, user, protocol_version=None, meta=None):
         return self.context_class(

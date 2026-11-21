@@ -12,16 +12,19 @@ release without a deprecation period.
 
 Breaking in 0.6:
 
-- A permission is Django permission names or a callable, nothing else. The
-  shorthand strings `"staff"`, `"authenticated"` and `"any"` are gone (they
-  raise `ImproperlyConfigured`); pass `xprez_mcp.permissions.allow_staff` or
-  `allow_authenticated` instead, and for "anyone" `True` as the server
-  permission (an item without a permission is already open).
-- Server access (`PERMISSION`, `MCPServer(permission=...)`) is a function
-  `f(ctx) -> bool`, `True` or `False`, nothing else: no strings, neither
-  permission names nor dotted paths. `"PERMISSION": "crm.use_mcp"` fails
-  `manage.py check` with `xprez_mcp.E004`; check the permission in a
-  function: `lambda ctx: ctx.user.has_perm("crm.use_mcp")`.
+- Every permission (server access, `@tool(permission=...)`,
+  `ModelProvider.permissions`) is a function `f(ctx) -> bool`, `True` or
+  `False`, nothing else: no strings, neither Django permission names nor
+  dotted paths nor the `"staff"` / `"authenticated"` / `"any"` shorthands.
+  Check a Django permission in the function:
+  `lambda ctx: ctx.user.has_perm("crm.use_mcp")`; `allow_staff` and
+  `allow_authenticated` stay in `xprez_mcp.permissions`. A string raises
+  `ImproperlyConfigured` where it is declared, and in `PERMISSION` fails
+  `manage.py check` with `xprez_mcp.E004`. `allow_any`,
+  `PERMISSION_CALLBACK` and `check_permission` are gone.
+- `ModelProvider.django_model_permissions` is `model_permissions = True`,
+  and `{app_label}` / `{model_name}` are no longer filled into
+  `permissions`.
 - File fields (`FileField`, `ImageField`) are writable, so they join the
   default `write_fields` and the admin's writable fields; a file field without
   `blank=True` is a required argument of `create`.
@@ -148,7 +151,7 @@ class CRMProvider(Provider):
     def has_permission(self, ctx):
         return ctx.user.is_staff
 
-    @tool(read_only=True, permission="main.view_member")
+    @tool(read_only=True, permission=lambda ctx: ctx.user.has_perm("main.view_member"))
     def search(self, ctx, query: Annotated[str, "Free text"], limit: int = 20):
         """Search members, clients and assignments at once."""
         ...
@@ -560,16 +563,20 @@ and registers them itself, the way a custom `AdminSite` does.
 
 Closed by default: a server nobody configured lets nobody in.
 
-A permission is one of two things, with one meaning each:
+A permission is the same everywhere (server access, `@tool(permission=...)`,
+`ModelProvider.permissions`): a callable `f(ctx) -> bool`, `True` or
+`False`. A Django permission is checked inside the callable:
 
-- Django permission names: `"app_label.codename"` or a list of them, all
-  required (`user.has_perms`). A string without a dot raises
-  `ImproperlyConfigured`.
-- A callable `permission(ctx) -> bool`. Common ones ship in
-  `xprez_mcp.permissions`: `allow_staff`, `allow_authenticated`.
+```python
+@tool(permission=lambda ctx: ctx.user.has_perm("crm.delete_client"))
+```
 
-Items (`@tool(permission=...)`, `ModelProvider.permissions`) take either in
-one argument: in Python the type tells them apart.
+Common callables ship in `xprez_mcp.permissions`: `allow_staff`,
+`allow_authenticated`. No strings: in settings a permission name would read
+like a dotted path, and one rule for every place is easier to remember. A
+string or a list raises `ImproperlyConfigured` where it is declared (when the
+decorator or the provider class is read). On an item, no permission and
+`True` both mean open.
 
 ### Server access
 
@@ -633,10 +640,10 @@ a permission lets every user who passes the server check create records.
 class ClientProvider(ModelProvider):
     actions = ["list", "get", "update", "delete"]
     permissions = {                    # per action, hides the tool
-        "update": "clients.change_client",
+        "update": lambda ctx: ctx.user.has_perm("clients.change_client"),
         "delete": lambda ctx: ctx.user.is_superuser,
     }
-    # permissions = ModelProvider.django_model_permissions  # view/add/change/delete
+    # model_permissions = True  # also the model's view/add/change/delete, as the admin
 
     def has_action_permission(self, ctx, action):
         return super().has_action_permission(ctx, action)
@@ -644,6 +651,11 @@ class ClientProvider(ModelProvider):
     def has_object_permission(self, ctx, action, instance):  # after the fetch
         return action == "get" or instance.owner_id == ctx.user.pk
 ```
+
+`model_permissions = True` requires the model's Django permission per action,
+as the admin does: `view` or `change` for `list` / `get`, `add`, `change` and
+`delete` for the writes, on top of `permissions`. `AdminProvider` refuses
+both: it uses the `ModelAdmin`'s own checks.
 
 A failed action permission hides the tool. A failed object permission is a
 readable `PermissionDenied`: the user can already see the row. In generic

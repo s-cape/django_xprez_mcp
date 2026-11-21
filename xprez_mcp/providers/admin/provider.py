@@ -120,10 +120,10 @@ class AdminProvider(ModelProvider):
         self.model_admin = self.get_model_admin()
         self.unsupported = []
         label = type(self).__qualname__
-        if self.permissions:
+        if self.permissions or self.model_permissions:
             raise ImproperlyConfigured(
                 f"{label}: AdminProvider uses the admin's permissions; "
-                "permissions is not supported."
+                "permissions and model_permissions are not supported."
             )
         if "delete_selected" in self.admin_actions:
             raise ImproperlyConfigured(f"{label}: delete_selected is never exposed.")

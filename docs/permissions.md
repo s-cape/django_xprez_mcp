@@ -19,16 +19,10 @@ so their existence does not leak. Check the result for a user with
 
 ## Writing a permission
 
-A permission is one of:
-
-- Django permission names: `"crm.change_client"` or a list of them, all
-  required (`user.has_perms`),
-- a callable: `lambda ctx: ctx.user.is_superuser`, or one of
-  `xprez_mcp.permissions.allow_staff`, `allow_authenticated`.
-
-Items take either in `permission=`. Server access (`PERMISSION` /
-`MCPServer(permission=...)`) takes a function, `True` or `False`, no
-strings; check Django permissions inside the function.
+A permission is the same everywhere (server access, items, model actions):
+a callable `f(ctx) -> bool`, `True` or `False`. No strings: check a Django
+permission inside the callable, `lambda ctx: ctx.user.has_perm("crm.change_client")`.
+`xprez_mcp.permissions` ships `allow_staff` and `allow_authenticated`.
 
 ## Recipes
 
@@ -52,7 +46,7 @@ class ReportsProvider(Provider):
 One tool behind a Django permission:
 
 ```python
-@tool(destructive=True, permission="crm.delete_client")
+@tool(destructive=True, permission=lambda ctx: ctx.user.has_perm("crm.delete_client"))
 def purge(self, ctx, id: int): ...
 ```
 
@@ -70,7 +64,7 @@ permission and `get_queryset` are the gate. To follow the model permissions:
 ```python
 class NoteProvider(ModelProvider):
     actions = ["list", "get", "update", "delete"]
-    permissions = ModelProvider.django_model_permissions
+    model_permissions = True  # view (or change) to read, add/change/delete to write
 ```
 
 Or per action, and per object after the fetch:
@@ -78,7 +72,7 @@ Or per action, and per object after the fetch:
 ```python
 class NoteProvider(ModelProvider):
     actions = ["list", "get", "update"]
-    permissions = {"update": "notes.change_note"}
+    permissions = {"update": lambda ctx: ctx.user.has_perm("notes.change_note")}
 
     def has_object_permission(self, ctx, action, instance):
         return action == "get" or instance.owner_id == ctx.user.pk

@@ -8,7 +8,7 @@ from django.apps import apps
 from django.core.exceptions import ImproperlyConfigured
 
 from . import schema
-from ..permissions import check_permission
+from ..permissions import allows, validate_permission
 
 URI_PARAMETER = re.compile(r"\{(\w+)\}")
 
@@ -30,7 +30,8 @@ class Spec:
         if description is None:
             description = inspect.getdoc(func) or ""
         self.description = inspect.cleandoc(description)
-        self.permission = permission
+        # checked now, so a bad permission fails at import, not per call
+        self.permission = validate_permission(permission, f"permission of {self.name}")
 
 
 class CompletionMixin:
@@ -168,7 +169,7 @@ class Item:
     def is_allowed(self, ctx):
         if self.provider is not None and not self.provider.has_permission(ctx):
             return False
-        return check_permission(self.spec.permission, ctx)
+        return allows(self.spec.permission, ctx)
 
     def invoke(self, func, ctx, *args, **kwargs):
         if self.provider is not None:

@@ -41,7 +41,7 @@ from xprez_mcp import Provider, mcp, prompt, resource, tool
 class NotesProvider(Provider):
     namespace = "notes"
 
-    @tool(read_only=True, permission="myapp.view_note")
+    @tool(read_only=True, permission=lambda ctx: ctx.user.has_perm("myapp.view_note"))
     def search(self, ctx, query: str, limit: int = 20):
         """Search notes by title."""
         notes = Note.objects.filter(owner=ctx.user, title__icontains=query)

@@ -29,7 +29,7 @@ class ClientProvider(ModelProvider):
     ordering_fields = ["name", "founded"]
     actions = ["list", "get", "create", "update", "delete"]
     permissions = {
-        "create": "{app_label}.add_{model_name}",
+        "create": lambda ctx: ctx.user.has_perm("testapp.add_client"),
         "delete": allow_staff,
     }
     resources = True

@@ -112,7 +112,7 @@ class StaffProvider(Provider):
     def report(self, ctx):
         return "report"
 
-    @tool(permission="auth.view_user")
+    @tool(permission=lambda ctx: ctx.user.has_perm("auth.view_user"))
     def users(self, ctx):
         return {"count": 0}
 

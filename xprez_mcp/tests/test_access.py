@@ -11,7 +11,13 @@ from xprez_mcp import MCPServer
 from xprez_mcp.auth import BearerToken
 from xprez_mcp.checks import check_servers
 from xprez_mcp.core.context import CallContext
-from xprez_mcp.permissions import allow_authenticated, allow_staff, check_permission
+from xprez_mcp.core.items import ToolSpec
+from xprez_mcp.permissions import (
+    allow_authenticated,
+    allow_staff,
+    allows,
+    validate_permission,
+)
 
 from .test_protocol import MCPTestCase
 
@@ -52,8 +58,9 @@ class ServerAccessTests(MCPTestCase):
         self.assertEqual(default.permission.__name__, "allow_authenticated")
 
     def test_true_and_false(self):
-        anonymous = CallContext(server=None)
-        self.assertTrue(MCPServer(name="x", permission=True).permission(anonymous))
+        open_server = MCPServer(name="x", permission=True)
+        self.assertIs(open_server.permission, True)
+        self.assertTrue(open_server.has_access(CallContext(server=open_server)))
         closed = MCPServer(name="x", permission=False)
         self.assertFalse(closed.has_access(CallContext(server=closed, user=self.staff)))
         with override_settings(
@@ -114,25 +121,32 @@ class PermissionTests(SimpleTestCase):
     def ctx(self, user=None):
         return CallContext(server=None, user=user)
 
-    def test_names_and_callables(self):
+    def test_callables_and_booleans(self):
         class User:
             is_authenticated = True
             is_staff = False
 
-            def has_perms(self, perms):
-                return True
+        self.assertTrue(allows(None, self.ctx()))
+        self.assertTrue(allows(True, self.ctx()))
+        self.assertFalse(allows(False, self.ctx(User())))
+        self.assertTrue(allows(lambda ctx: True, self.ctx()))
+        self.assertIs(validate_permission(allow_staff), allow_staff)
+        self.assertFalse(allow_authenticated(self.ctx()))
+        self.assertFalse(allow_staff(self.ctx(User())))
 
-        user = User()
-        self.assertTrue(check_permission(lambda ctx: True, self.ctx()))
-        self.assertFalse(check_permission(allow_authenticated, self.ctx()))
-        self.assertFalse(check_permission(allow_staff, self.ctx(user)))
-        self.assertFalse(check_permission("a.b", self.ctx()))
-        self.assertTrue(check_permission(["a.b", "c.d"], self.ctx(user)))
+    def test_no_strings_or_lists(self):
+        for permission in ("auth.view_user", "staff", ["a.b"], [allow_staff]):
+            with self.subTest(permission=permission):
+                with self.assertRaisesMessage(ImproperlyConfigured, "has_perm("):
+                    validate_permission(permission)
 
-    def test_shorthands_removed(self):
-        for permission in ("staff", ["a.b", "any"], [allow_staff]):
-            with self.assertRaisesMessage(ImproperlyConfigured, "allow_staff"):
-                check_permission(permission, self.ctx())
+    def test_item_permission_checked_when_declared(self):
+        def ping(ctx):
+            return "pong"
+
+        with self.assertRaisesMessage(ImproperlyConfigured, "permission of ping"):
+            ToolSpec(ping, permission="auth.view_user")
+        self.assertIs(ToolSpec(ping, permission=allow_staff).permission, allow_staff)
 
     def test_importable_from_settings(self):
         # settings.py imports allow_staff before Django is configured
@@ -142,9 +156,6 @@ class PermissionTests(SimpleTestCase):
             [sys.executable, "-c", code], env=env, capture_output=True, text=True
         )
         self.assertEqual(result.returncode, 0, result.stderr)
-
-    def test_none_allows(self):
-        self.assertTrue(check_permission(None, self.ctx()))
 
 
 class CheckTests(SimpleTestCase):
