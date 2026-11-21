@@ -7,7 +7,7 @@ section of [design.md](design.md).
 | Layer | Fails with | Configure with |
 |---|---|---|
 | Authentication | `401` | `AUTHENTICATION`, `TOKEN_RESOLVER` |
-| Server permission | `403`, before `initialize` | `XPREZ_MCP["PERMISSION"]`, `MCPServer(permission=...)` |
+| Server permission | `403`, before `initialize` | `PERMISSION`, `MCPServer(permission=...)` (a function) |
 | Provider | items hidden | `Provider.has_permission(ctx)` |
 | Item or action | item hidden | `@tool(permission=...)`, `ModelProvider.permissions` |
 | Rows | not found | `get_queryset(ctx)` |
@@ -19,19 +19,22 @@ so their existence does not leak. Check the result for a user with
 
 ## Writing a permission
 
-Wherever a permission is accepted, it can be:
-
-- a permission string: `"crm.change_client"` (`user.has_perm`),
-- a list of strings and shorthands, all required,
-- a callable: `lambda ctx: ctx.user.is_superuser`,
-- a shorthand: `"authenticated"`, `"staff"` or `"any"`.
+A permission is the same everywhere (server access, items, model actions):
+a callable `f(ctx) -> bool`, `True` or `False`. No strings: check a Django
+permission inside the callable, `lambda ctx: ctx.user.has_perm("crm.change_client")`.
+`xprez_mcp.permissions` ships `allow_staff` and `allow_authenticated`.
+`ctx.user` is None on anonymous calls (`allow_anonymous=True`), so there
+check it first: `ctx.user is not None and ctx.user.has_perm(...)`.
 
 ## Recipes
 
 Only staff with a project permission may connect:
 
 ```python
-XPREZ_MCP = {"PERMISSION": ["staff", "crm.use_mcp"]}
+# settings.py
+XPREZ_MCP = {
+    "PERMISSION": lambda ctx: ctx.user.is_staff and ctx.user.has_perm("crm.use_mcp"),
+}
 ```
 
 A whole provider for one group:
@@ -45,7 +48,7 @@ class ReportsProvider(Provider):
 One tool behind a Django permission:
 
 ```python
-@tool(destructive=True, permission="crm.delete_client")
+@tool(destructive=True, permission=lambda ctx: ctx.user.has_perm("crm.delete_client"))
 def purge(self, ctx, id: int): ...
 ```
 
@@ -63,7 +66,7 @@ permission and `get_queryset` are the gate. To follow the model permissions:
 ```python
 class NoteProvider(ModelProvider):
     actions = ["list", "get", "update", "delete"]
-    permissions = ModelProvider.django_model_permissions
+    model_permissions = True  # view (or change) to read, add/change/delete to write
 ```
 
 Or per action, and per object after the fetch:
@@ -71,7 +74,7 @@ Or per action, and per object after the fetch:
 ```python
 class NoteProvider(ModelProvider):
     actions = ["list", "get", "update"]
-    permissions = {"update": "notes.change_note"}
+    permissions = {"update": lambda ctx: ctx.user.has_perm("notes.change_note")}
 
     def has_object_permission(self, ctx, action, instance):
         return action == "get" or instance.owner_id == ctx.user.pk

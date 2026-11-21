@@ -1,6 +1,7 @@
 """Model providers on their own servers: tools per model and generic."""
 
 from xprez_mcp import MCPServer, ModelProvider, tool
+from xprez_mcp.permissions import allow_staff
 
 from .models import Client, Industry, Tag
 
@@ -28,8 +29,8 @@ class ClientProvider(ModelProvider):
     ordering_fields = ["name", "founded"]
     actions = ["list", "get", "create", "update", "delete"]
     permissions = {
-        "create": "{app_label}.add_{model_name}",
-        "delete": "staff",
+        "create": lambda ctx: ctx.user.has_perm("testapp.add_client"),
+        "delete": allow_staff,
     }
     resources = True
     resource_scheme = "crm"

@@ -9,8 +9,9 @@ from django.test import SimpleTestCase, TestCase, override_settings
 from django.test.utils import CaptureQueriesContext
 
 from xprez_mcp import MCPServer, ModelProvider
-from xprez_mcp.context import CallContext
-from xprez_mcp.model_provider import field_annotation
+from xprez_mcp.core.context import CallContext
+from xprez_mcp.permissions import allow_staff
+from xprez_mcp.providers.fields import field_annotation
 
 from .test_protocol import MCPTestCase
 from .testapp.models import Client, ColoredTag, Industry, Note, Tag
@@ -403,7 +404,7 @@ class ExposureGuardTests(TestCase):
         attributes = {
             "fields": ["slug"],
             "lookup_field": "slug",
-            "permissions": {"list": "staff"},
+            "permissions": {"list": allow_staff},
         }
         provider = type("P", (ModelProvider,), attributes)(
             MCPServer(name="complete"), model=Client
@@ -521,19 +522,35 @@ class ConfigurationTests(SimpleTestCase):
         with self.assertRaisesMessage(ImproperlyConfigured, "not editable"):
             self.provider(write_fields=["name", "label"])
 
-    def test_django_model_permissions(self):
-        provider = self.provider(permissions=ModelProvider.django_model_permissions)
-        self.assertEqual(provider.get_permissions()["update"], "testapp.change_client")
+    def test_model_permissions(self):
+        provider = self.provider(
+            model_permissions=True, actions=["list", "get", "update"]
+        )
 
         class Perms:
             is_authenticated = True
 
-            def has_perms(self, perms):
-                return perms == ["testapp.view_client"]
+            def __init__(self, *names):
+                self.names = names
 
-        ctx = CallContext(server=None, user=Perms())
-        self.assertTrue(provider.has_action_permission(ctx, "list"))
-        self.assertFalse(provider.has_action_permission(ctx, "update"))
+            def has_perm(self, name):
+                return name in self.names
+
+        def allowed(user, action):
+            ctx = CallContext(server=None, user=user)
+            return provider.has_action_permission(ctx, action)
+
+        viewer = Perms("testapp.view_client")
+        self.assertTrue(allowed(viewer, "list"))
+        self.assertFalse(allowed(viewer, "update"))
+        self.assertTrue(allowed(Perms("testapp.change_client"), "update"))
+        # as in the admin, change permission also lets you read
+        self.assertTrue(allowed(Perms("testapp.change_client"), "get"))
+        self.assertFalse(allowed(None, "list"))
+
+    def test_permissions_are_callables(self):
+        with self.assertRaisesMessage(ImproperlyConfigured, "permissions['update']"):
+            self.provider(permissions={"update": "testapp.change_client"})
 
     def test_generic_name_clash(self):
         server = MCPServer(name="clash", exposure="generic")

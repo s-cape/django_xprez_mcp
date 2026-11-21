@@ -1,4 +1,5 @@
 from django.core import checks
+from django.core.exceptions import ImproperlyConfigured
 
 
 @checks.register()
@@ -17,17 +18,29 @@ def check_servers(app_configs=None, **kwargs):
     for server in sorted(_servers, key=lambda server: server.name or ""):
         if not server.mounted:
             continue
-        if server.permission is None:
+        try:
+            permission = server.permission
+        except ImproperlyConfigured as error:
             errors.append(
                 checks.Error(
-                    f"MCP server {server.name!r} has no permission, so it lets "
-                    "nobody in.",
-                    hint='Set XPREZ_MCP["PERMISSION"] or MCPServer(permission=...), '
-                    'for example "app_label.use_mcp" or "authenticated".',
+                    f"MCP server {server.name!r}: {error}",
                     obj=server,
-                    id="xprez_mcp.E001",
+                    id="xprez_mcp.E004",
                 )
             )
+        else:
+            if permission is None:
+                errors.append(
+                    checks.Error(
+                        f"MCP server {server.name!r} has no permission, so it "
+                        "lets nobody in.",
+                        hint='Set XPREZ_MCP["PERMISSION"] or '
+                        "MCPServer(permission=...) to True, False or a function "
+                        "f(ctx) -> bool, such as xprez_mcp.permissions.allow_staff.",
+                        obj=server,
+                        id="xprez_mcp.E001",
+                    )
+                )
         names.setdefault(server.name, []).append(server)
         errors += check_names(server)
     for name, servers in names.items():

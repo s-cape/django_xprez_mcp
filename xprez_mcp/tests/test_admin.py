@@ -6,8 +6,9 @@ from django.core.exceptions import ImproperlyConfigured
 from django.test import SimpleTestCase, TestCase
 
 from xprez_mcp import AdminProvider, MCPServer, ToolError
-from xprez_mcp.context import CallContext
+from xprez_mcp.core.context import CallContext
 from xprez_mcp.errors import InvalidArguments
+from xprez_mcp.permissions import allow_staff
 
 from .test_models import ModelTestCase
 from .testapp.admin import ClientAdmin, site
@@ -363,7 +364,7 @@ class AdminConfigurationTests(SimpleTestCase):
     def test_permissions_not_supported(self):
         class Bad(AdminProvider):
             admin_site = site
-            permissions = {"list": "staff"}
+            permissions = {"list": allow_staff}
 
         with self.assertRaisesMessage(ImproperlyConfigured, "admin's permissions"):
             Bad(MCPServer(), model=Client)

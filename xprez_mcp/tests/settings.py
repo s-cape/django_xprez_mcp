@@ -1,3 +1,5 @@
+from xprez_mcp.permissions import allow_authenticated
+
 SECRET_KEY = "test-secret"
 DEBUG = False
 ALLOWED_HOSTS = ["testserver"]
@@ -35,7 +37,7 @@ TEMPLATES = [
 ]
 XPREZ_MCP = {
     "NAME": "test",
-    "PERMISSION": "authenticated",
+    "PERMISSION": allow_authenticated,
     "TOKEN_RESOLVER": "xprez_mcp.tests.testapp.tokens.resolve",
     "EXCLUDE": ["hidden_*"],
 }

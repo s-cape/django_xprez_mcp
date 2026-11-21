@@ -13,8 +13,11 @@ Guides: [getting started](docs/getting-started.md),
 ```python
 # settings.py
 INSTALLED_APPS = [..., "xprez_mcp", "xprez_mcp.contrib.tokens"]
+from xprez_mcp.permissions import allow_staff
+
 XPREZ_MCP = {
-    "PERMISSION": "myapp.use_mcp",  # required: who may use the server at all
+    # required: who may use the server at all
+    "PERMISSION": allow_staff,
 }
 
 # urls.py
@@ -38,7 +41,7 @@ from xprez_mcp import Provider, mcp, prompt, resource, tool
 class NotesProvider(Provider):
     namespace = "notes"
 
-    @tool(read_only=True, permission="myapp.view_note")
+    @tool(read_only=True, permission=lambda ctx: ctx.user.has_perm("myapp.view_note"))
     def search(self, ctx, query: str, limit: int = 20):
         """Search notes by title."""
         notes = Note.objects.filter(owner=ctx.user, title__icontains=query)

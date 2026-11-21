@@ -12,7 +12,7 @@ from xprez_mcp import (
     resource,
     tool,
 )
-from xprez_mcp.context import CallContext
+from xprez_mcp.core.context import CallContext
 
 
 class Base(Provider):

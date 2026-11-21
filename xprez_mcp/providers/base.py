@@ -1,5 +1,5 @@
-from .decorators import get_spec
-from .items import Item
+from ..core.decorators import get_spec
+from ..core.items import Item
 
 
 class Provider:

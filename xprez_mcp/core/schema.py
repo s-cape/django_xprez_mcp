@@ -11,7 +11,8 @@ from typing import Annotated, Any, Literal, Union, get_args, get_origin
 
 from django.core.exceptions import ImproperlyConfigured
 
-from .errors import InvalidArguments
+from ..errors import InvalidArguments
+from .files import FileArgument
 
 EMPTY = inspect.Parameter.empty
 _VARIADIC = (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD)
@@ -81,58 +82,12 @@ def split_annotated(annotation):
     return annotation, description
 
 
-def _is_union(annotation):
-    origin = get_origin(annotation)
-    return origin is Union or origin is _UNION_TYPE
-
-
 def annotation_schema(annotation):
     annotation, description = split_annotated(annotation)
     schema = _schema(annotation)
     if description:
         schema = {**schema, "description": description}
     return schema
-
-
-def _schema(annotation):
-    if annotation is EMPTY or annotation is Any:
-        return {}
-    if annotation is type(None):
-        return {"type": "null"}
-    if annotation in _SIMPLE:
-        return dict(_SIMPLE[annotation])
-    if isinstance(annotation, type) and issubclass(annotation, enum.Enum):
-        return {"enum": [member.value for member in annotation]}
-    if hasattr(annotation, "model_json_schema"):  # pydantic model
-        return annotation.model_json_schema()
-    origin, args = get_origin(annotation), get_args(annotation)
-    if origin is Literal:
-        return {"enum": list(args)}
-    if _is_union(annotation):
-        # anyOf rather than a ``type`` array: single-type dialects reject arrays.
-        return {"anyOf": [annotation_schema(arg) for arg in args]}
-    if annotation in (list, set, frozenset, tuple):
-        return {"type": "array"}
-    if origin in (list, set, frozenset) or (
-        origin is tuple and len(args) == 2 and args[1] is Ellipsis
-    ):
-        return {"type": "array", "items": annotation_schema(args[0])}
-    if annotation is dict:
-        return {"type": "object"}
-    if origin is dict:
-        values = annotation_schema(args[1])
-        if not values:  # dict[str, Any]: an empty schema constrains nothing
-            return {"type": "object"}
-        return {"type": "object", "additionalProperties": values}
-    raise TypeError(f"Unsupported type annotation: {annotation!r}")
-
-
-def _default_value(value):
-    if isinstance(value, enum.Enum):
-        value = value.value
-    if isinstance(value, (str, int, float, bool)):
-        return value
-    return None
 
 
 def signature_schema(func):
@@ -199,10 +154,6 @@ def coerce_strings(func, values):
     }
 
 
-def _invalid(path, expected):
-    return InvalidArguments(f"{path} must be {expected}.")
-
-
 def coerce(annotation, value, path):
     annotation, _ = split_annotated(annotation)
     if annotation is EMPTY or annotation is Any:
@@ -242,6 +193,8 @@ def coerce(annotation, value, path):
             raise _invalid(
                 path, f"one of {[member.value for member in annotation]}"
             ) from None
+    if isinstance(annotation, type) and issubclass(annotation, FileArgument):
+        return annotation.coerce(value, path)
     if hasattr(annotation, "model_validate"):  # pydantic model
         try:
             return annotation.model_validate(value)
@@ -337,12 +290,6 @@ _JSON_TYPES = {
 }
 
 
-def _matches(type_name, value):
-    if type_name in ("integer", "number") and isinstance(value, bool):
-        return False
-    return isinstance(value, _JSON_TYPES[type_name])
-
-
 def validate_json(schema, value, path="arguments"):
     """The subset of JSON Schema that tool input schemas commonly use."""
     types_ = schema.get("type")
@@ -365,3 +312,64 @@ def validate_json(schema, value, path="arguments"):
     if isinstance(value, list) and "items" in schema:
         for index, item in enumerate(value):
             validate_json(schema["items"], item, f"{path}[{index}]")
+
+
+# --- helpers -----------------------------------------------------------------
+
+
+def _is_union(annotation):
+    origin = get_origin(annotation)
+    return origin is Union or origin is _UNION_TYPE
+
+
+def _schema(annotation):
+    if annotation is EMPTY or annotation is Any:
+        return {}
+    if annotation is type(None):
+        return {"type": "null"}
+    if annotation in _SIMPLE:
+        return dict(_SIMPLE[annotation])
+    if isinstance(annotation, type) and issubclass(annotation, enum.Enum):
+        return {"enum": [member.value for member in annotation]}
+    if isinstance(annotation, type) and issubclass(annotation, FileArgument):
+        return annotation.json_schema()
+    if hasattr(annotation, "model_json_schema"):  # pydantic model
+        return annotation.model_json_schema()
+    origin, args = get_origin(annotation), get_args(annotation)
+    if origin is Literal:
+        return {"enum": list(args)}
+    if _is_union(annotation):
+        # anyOf rather than a ``type`` array: single-type dialects reject arrays.
+        return {"anyOf": [annotation_schema(arg) for arg in args]}
+    if annotation in (list, set, frozenset, tuple):
+        return {"type": "array"}
+    if origin in (list, set, frozenset) or (
+        origin is tuple and len(args) == 2 and args[1] is Ellipsis
+    ):
+        return {"type": "array", "items": annotation_schema(args[0])}
+    if annotation is dict:
+        return {"type": "object"}
+    if origin is dict:
+        values = annotation_schema(args[1])
+        if not values:  # dict[str, Any]: an empty schema constrains nothing
+            return {"type": "object"}
+        return {"type": "object", "additionalProperties": values}
+    raise TypeError(f"Unsupported type annotation: {annotation!r}")
+
+
+def _default_value(value):
+    if isinstance(value, enum.Enum):
+        value = value.value
+    if isinstance(value, (str, int, float, bool)):
+        return value
+    return None
+
+
+def _invalid(path, expected):
+    return InvalidArguments(f"{path} must be {expected}.")
+
+
+def _matches(type_name, value):
+    if type_name in ("integer", "number") and isinstance(value, bool):
+        return False
+    return isinstance(value, _JSON_TYPES[type_name])

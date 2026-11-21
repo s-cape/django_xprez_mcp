@@ -17,8 +17,11 @@ INSTALLED_APPS = [
     "xprez_mcp.contrib.tokens",  # optional: bearer tokens managed in the admin
 ]
 
+from xprez_mcp.permissions import allow_staff
+
 XPREZ_MCP = {
-    "PERMISSION": "myapp.use_mcp",  # required: who may use the server at all
+    # required: who may use the server at all
+    "PERMISSION": allow_staff,
 }
 ```
 
@@ -37,10 +40,57 @@ urlpatterns = [
 ./manage.py migrate
 ```
 
-`PERMISSION` has no default. Without it `manage.py check` fails with
-`xprez_mcp.E001` and the endpoint answers `403`. Use a permission of your own
-(add it to any model's `Meta.permissions`), or open the server explicitly
-with `"staff"`, `"authenticated"` or `"any"`.
+`PERMISSION` decides who may use the server: a function, `True` or `False`
+(no strings). It has no default: without it, `manage.py check` fails with
+`xprez_mcp.E001` and the endpoint answers `403`.
+
+| `PERMISSION` | Who gets in |
+|---|---|
+| `allow_staff` | staff users |
+| `allow_authenticated` | every authenticated user |
+| `lambda ctx: ctx.user.has_perm("myapp.use_mcp")` | users with that Django permission |
+| a function of your own | whoever it returns `True` for |
+| `True` | everyone who authenticates (and anonymous callers with `allow_anonymous=True`) |
+| `False` | nobody: the server is closed on purpose |
+
+`allow_staff` and `allow_authenticated` come from `xprez_mcp.permissions`,
+which is safe to import in settings. A function takes the call context and
+returns a boolean; a lambda right in settings needs no import:
+
+```python
+XPREZ_MCP = {
+    "PERMISSION": lambda ctx: ctx.user.is_staff and ctx.user.has_perm("myapp.use_mcp"),
+}
+```
+
+A function in a module of your own works too, as long as that module does
+not import models: settings load before the app registry is ready.
+
+A Django permission (`"<app_label>.<codename>"`) is granted in the admin like
+any other; superusers have it implicitly. The library ships none, so declare
+it on a model of your app and migrate:
+
+```python
+# myapp/models.py
+class Note(models.Model):
+    ...
+
+    class Meta:
+        permissions = [("use_mcp", "Can use the MCP server")]
+```
+
+A server of your own takes the same values:
+
+```python
+from xprez_mcp import MCPServer
+from xprez_mcp.permissions import allow_staff
+
+staff_mcp = MCPServer(name="staff", permission=allow_staff)
+```
+
+Users who fail the check get `403` when the client connects. Which tools
+and rows they see past that point is covered in
+[Permissions](permissions.md).
 
 ## Expose something
 

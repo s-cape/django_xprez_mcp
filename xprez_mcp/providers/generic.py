@@ -5,10 +5,10 @@ from typing import Annotated, Any, Optional, Union
 
 from django.core.exceptions import ImproperlyConfigured
 
-from . import schema
-from .errors import InvalidArguments
-from .items import Item, ToolSpec
-from .model_provider import HINTS
+from ..core import schema
+from ..errors import InvalidArguments
+from ..core.items import Item, ToolSpec
+from .model import HINTS
 
 MODEL = Annotated[str, "A model from models_list"]
 ID = Annotated[Union[str, int], "The record's lookup value (see models_list)"]
@@ -100,13 +100,6 @@ def record_inline_update(
 
 def record_inline_delete(ctx, model: MODEL, parent: ID, inline: INLINE, row: ROW):
     """Remove a row from a record's inline."""
-
-
-def _hints(action):
-    if action is None:
-        return HINTS["list"]
-    else:
-        return HINTS[action.removeprefix("inline_")]
 
 
 TOOLS = [
@@ -231,27 +224,6 @@ class GenericItem(Item):
         return self.spec.run(ctx, **kwargs)
 
 
-def parse_lookup(provider, value):
-    if isinstance(value, str) and provider.lookup_annotation is not str:
-        return schema.from_string(provider.lookup_annotation, value, "id")
-    return schema.coerce(provider.lookup_annotation, value, "id")
-
-
-def parse(provider, action, arguments):
-    """Validate ``arguments`` against the provider's own schema for the action."""
-    return parse_function(provider.argument_function(action), arguments)
-
-
-def parse_function(func, arguments):
-    try:
-        return schema.coerce_arguments(func, arguments)
-    except InvalidArguments as error:
-        if error.message.startswith("Unknown argument"):
-            valid = [param.name for param in schema.wire_parameters(func)]
-            raise InvalidArguments(f"{error.message} Valid: {valid}.") from None
-        raise
-
-
 def build_items(server, providers):
     by_name = {}
     for provider in providers:
@@ -273,3 +245,34 @@ def build_items(server, providers):
             GenericItem(GenericToolSpec(func, action, by_name, **_hints(action)))
         )
     return items
+
+
+# --- helpers -----------------------------------------------------------------
+
+
+def _hints(action):
+    if action is None:
+        return HINTS["list"]
+    else:
+        return HINTS[action.removeprefix("inline_")]
+
+
+def parse_lookup(provider, value):
+    if isinstance(value, str) and provider.lookup_annotation is not str:
+        return schema.from_string(provider.lookup_annotation, value, "id")
+    return schema.coerce(provider.lookup_annotation, value, "id")
+
+
+def parse(provider, action, arguments):
+    """Validate ``arguments`` against the provider's own schema for the action."""
+    return parse_function(provider.argument_function(action), arguments)
+
+
+def parse_function(func, arguments):
+    try:
+        return schema.coerce_arguments(func, arguments)
+    except InvalidArguments as error:
+        if error.message.startswith("Unknown argument"):
+            valid = [param.name for param in schema.wire_parameters(func)]
+            raise InvalidArguments(f"{error.message} Valid: {valid}.") from None
+        raise

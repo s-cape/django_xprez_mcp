@@ -2,8 +2,9 @@
 
 from importlib.metadata import PackageNotFoundError, version
 
-from .context import CallContext
-from .decorators import prompt, resource, tool
+from .core.context import CallContext
+from .core.decorators import prompt, resource, tool
+from .core.results import ToolResult
 from .errors import (
     AlreadyRegistered,
     AuthenticationFailed,
@@ -13,9 +14,8 @@ from .errors import (
     RpcError,
     ToolError,
 )
-from .model_provider import ModelProvider
-from .providers import Provider
-from .results import ToolResult
+from .providers.base import Provider
+from .providers.model import ModelProvider
 from .server import MCPServer, mcp
 
 try:
@@ -27,7 +27,7 @@ except PackageNotFoundError:  # running from a source tree that isn't installed
 def __getattr__(name):
     # lazy: django.contrib.admin is optional and needs the app registry
     if name == "AdminProvider":
-        from .admin_provider import AdminProvider
+        from .providers.admin.provider import AdminProvider
 
         return AdminProvider
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

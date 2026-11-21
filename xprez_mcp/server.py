@@ -20,9 +20,12 @@ from django.http import Http404
 from django.urls import path
 from django.utils.module_loading import import_string
 
-from . import conf, drf, results
-from .context import CallContext
-from .decorators import get_spec, prompt, resource, tool
+from . import conf
+from .core import results
+from .core.context import CallContext
+from .core.decorators import get_spec, prompt, resource, tool
+from .core.items import Item
+from .core.schema import coerce_strings
 from .errors import (
     INVALID_PARAMS,
     METHOD_NOT_FOUND,
@@ -34,10 +37,9 @@ from .errors import (
     RpcError,
     ToolError,
 )
-from .items import Item
-from .permissions import check_permission
-from .providers import Provider
-from .schema import coerce_strings
+from .integrations import drf
+from .permissions import allows, validate_permission
+from .providers.base import Provider
 
 logger = logging.getLogger("xprez_mcp")
 
@@ -50,17 +52,6 @@ NAME_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 LONG_NAME = 40
 
 _servers = weakref.WeakSet()
-
-
-@receiver(setting_changed)
-def _settings_changed(setting, **kwargs):
-    if setting == "XPREZ_MCP":
-        for server in list(_servers):
-            server.clear_cache()
-
-
-def _is_provider_class(value):
-    return isinstance(value, type) and issubclass(value, Provider)
 
 
 class MCPServer:
@@ -128,10 +119,15 @@ class MCPServer:
 
     @property
     def permission(self):
-        """Who may use the server at all. None means nobody (closed by default)."""
-        if self._permission is not None:
-            return self._permission
-        return conf.get("PERMISSION")
+        """Who may use the server: ``f(ctx) -> bool``, a bool, or None (nobody).
+
+        ``MCPServer(permission=...)``, else ``XPREZ_MCP["PERMISSION"]``; also
+        ``True`` (everyone) or ``False`` (nobody, on purpose).
+        """
+        permission = self._permission
+        if permission is None:
+            permission = conf.get("PERMISSION")
+        return validate_permission(permission, "server permission")
 
     @property
     def list_page_size(self):
@@ -287,13 +283,13 @@ class MCPServer:
         """Registered providers, then those built by ``register_admin``."""
         providers = list(self._registry.values())
         if self._admin_sites:
-            from .admin_provider import build_admin_providers
+            from .providers.admin.provider import build_admin_providers
 
             providers += build_admin_providers(self, self._admin_sites)
         return providers
 
     def build_catalog(self):
-        from .model_provider import ModelProvider
+        from .providers.model import ModelProvider
 
         self._trusted_providers = set()
         providers = self.get_providers()
@@ -306,7 +302,7 @@ class MCPServer:
             and provider.get_exposure() == "generic"
         ]
         if generic:
-            from .generic import build_items
+            from .providers.generic import build_items
 
             items += build_items(self, generic)
         exclude = [*conf.get("EXCLUDE"), *self.exclude]
@@ -423,11 +419,10 @@ class MCPServer:
         return None
 
     def has_access(self, ctx):
-        """The server-wide permission, checked before any method."""
+        """Who may use the server, checked before any method; without a
+        permission, nobody gets in."""
         permission = self.permission
-        if permission is None:
-            return False
-        return check_permission(permission, ctx)
+        return permission is not None and allows(permission, ctx)
 
     def get_context(self, request, user, protocol_version=None, meta=None):
         return self.context_class(
@@ -709,6 +704,23 @@ class MCPServer:
         return None, None
 
 
+mcp = MCPServer()
+
+
+# --- helpers -----------------------------------------------------------------
+
+
+@receiver(setting_changed)
+def _settings_changed(setting, **kwargs):
+    if setting == "XPREZ_MCP":
+        for server in list(_servers):
+            server.clear_cache()
+
+
+def _is_provider_class(value):
+    return isinstance(value, type) and issubclass(value, Provider)
+
+
 def _encode_list_cursor(identifier):
     return base64.urlsafe_b64encode(identifier.encode()).decode().rstrip("=")
 
@@ -725,6 +737,3 @@ def _decode_list_cursor(cursor):
 
 def _user_pk(ctx):
     return getattr(ctx.user, "pk", None)
-
-
-mcp = MCPServer()

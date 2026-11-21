@@ -28,20 +28,21 @@ from django.http import Http404, HttpRequest
 from django.utils.datastructures import MultiValueDict
 from django.utils.text import slugify
 
-from . import admin_request as admin_requests
-from . import schema
-from .admin_request import CollectedMessages  # noqa: F401  (moved)
-from .errors import InvalidArguments, ToolError
-from .items import Item, ToolSpec
-from .model_provider import (
+from ...core import schema
+from ...core.items import Item, ToolSpec
+from ...errors import InvalidArguments, ToolError
+from ..fields import file_field, is_writable, write_parameter
+from ..model import (
+    check_cleared,
+    closing_stored_files,
     HINTS,
     ModelProvider,
     form_error,
-    is_writable,
+    form_files,
     make_function,
     signature_function,
-    write_parameter,
 )
+from . import request as admin_requests
 
 INLINE_PERMISSIONS = {
     "create": "has_add_permission",
@@ -50,32 +51,6 @@ INLINE_PERMISSIONS = {
 }
 INLINE_OPERATIONS = tuple(INLINE_PERMISSIONS)
 INLINE_ACTIONS = {f"inline_{operation}": operation for operation in INLINE_PERMISSIONS}
-_PLAIN = (
-    str,
-    int,
-    float,
-    bool,
-    type(None),
-    list,
-    dict,
-    datetime.date,
-    datetime.time,
-    decimal.Decimal,
-    uuid.UUID,
-)
-
-
-def plain(value):
-    """A value the JSON encoder can handle; anything else as its string."""
-    if isinstance(value, models.Model):
-        return str(value)
-    if isinstance(value, (list, tuple)):
-        return [plain(item) for item in value]
-    if isinstance(value, str):
-        return str(value)  # SafeString and lazy strings
-    if isinstance(value, _PLAIN):
-        return value
-    return str(value)
 
 
 class AdminProvider(ModelProvider):
@@ -119,10 +94,10 @@ class AdminProvider(ModelProvider):
         self.model_admin = self.get_model_admin()
         self.unsupported = []
         label = type(self).__qualname__
-        if self.permissions:
+        if self.permissions or self.model_permissions:
             raise ImproperlyConfigured(
                 f"{label}: AdminProvider uses the admin's permissions; "
-                "permissions is not supported."
+                "permissions and model_permissions are not supported."
             )
         if "delete_selected" in self.admin_actions:
             raise ImproperlyConfigured(f"{label}: delete_selected is never exposed.")
@@ -443,28 +418,52 @@ class AdminProvider(ModelProvider):
 
     # --- writes -------------------------------------------------------------
 
-    def admin_form(self, request, data, instance):
-        """A bound admin form for just the fields sent, validated."""
+    def check_settable(self, request, names, instance):
+        """Refuse fields the admin does not let this user edit."""
         model_admin = self.model_admin
         allowed = set(flatten_fieldsets(model_admin.get_fieldsets(request, instance)))
         allowed -= set(model_admin.get_readonly_fields(request, instance))
         allowed -= self.get_hidden_fields(model_admin)
-        refused = sorted(name for name in data if name not in allowed)
+        refused = sorted(name for name in names if name not in allowed)
         if refused:
             raise ToolError(f"You cannot set {', '.join(refused)}.")
-        form_class = model_admin.get_form(
-            request, instance, change=instance is not None, fields=list(data)
+
+    def admin_form(self, request, data, instance, files=None):
+        """A bound admin form for just the fields sent, validated."""
+        files = files or {}
+        self.check_settable(request, [*data, *files], instance)
+        return self.bound_admin_form(request, data, instance, files)
+
+    def bound_admin_form(self, request, data, instance, files):
+        """``admin_form`` once ``check_settable`` has passed."""
+        names = [*data, *files]
+        form_class = self.model_admin.get_form(
+            request, instance, change=instance is not None, fields=names
         )
-        form = form_class(data=data, files={}, instance=instance)
-        if not form.is_valid():
+        form = form_class(data=data, files=form_files(files), instance=instance)
+        with closing_stored_files(files):
+            valid = form.is_valid()
+        if not valid:
             raise form_error(form)
+        check_cleared(form, files)
         return form
 
-    def run_create(self, ctx, **data):
+    def admin_write(self, ctx, data, instance):
+        """``(request, form)`` of a create or an update, files resolved.
+
+        The files go to the form only: the request stays the call's shared one,
+        so what admin code sets on it is seen by the rest of the call.
+        """
         request = self.admin_request(ctx, write=True)
+        self.check_settable(request, data, instance)
+        data, files = self.resolve_files(ctx, data)
+        return request, self.bound_admin_form(request, data, instance, files)
+
+    def run_create(self, ctx, **data):
+        request, form = self.admin_write(ctx, data, None)
         model_admin = self.model_admin
-        form = self.admin_form(request, data, None)
-        with transaction.atomic():
+        uploads = form.cleaned_data.values()
+        with self.removing_uploads_on_error(uploads), transaction.atomic():
             obj = model_admin.save_form(request, form, change=False)
             model_admin.save_model(request, obj, form, change=False)
             model_admin.save_related(request, form, [], change=False)
@@ -475,10 +474,10 @@ class AdminProvider(ModelProvider):
     def run_update(self, ctx, **kwargs):
         value = kwargs.pop(self.lookup_argument)
         instance = self.get_object(ctx, value, "update")
-        request = self.admin_request(ctx, write=True)
+        request, form = self.admin_write(ctx, kwargs, instance)
         model_admin = self.model_admin
-        form = self.admin_form(request, kwargs, instance)
-        with transaction.atomic():
+        uploads = form.cleaned_data.values()
+        with self.removing_uploads_on_error(uploads), transaction.atomic():
             obj = model_admin.save_form(request, form, change=True)
             model_admin.save_model(request, obj, form, change=True)
             model_admin.save_related(request, form, [], change=True)
@@ -729,6 +728,7 @@ class AdminProvider(ModelProvider):
                 put(f"{prefix}-{target}-{name}", empty[name].value())
         elif target is None:
             raise Http404(f"No {inline} row {row!r} here.")
+        data, files = self.resolve_files(ctx, data, inline_admin.model._meta)
         if operation == "delete":
             put(f"{prefix}-{target}-DELETE", True)
         for name, value in data.items():
@@ -737,23 +737,32 @@ class AdminProvider(ModelProvider):
         put(f"{prefix}-INITIAL_FORMS", len(initial))
         put(f"{prefix}-MIN_NUM_FORMS", unbound.min_num)
         put(f"{prefix}-MAX_NUM_FORMS", unbound.max_num)
-        request = self.admin_request(ctx, write=True, data=post)
+        sent_files = files
+        files = {f"{prefix}-{target}-{name}": file for name, file in files.items()}
+        request = self.admin_request(ctx, write=True, data=post, files=_uploads(files))
 
-        formset = formset_class(
-            **model_admin.get_formset_kwargs(request, parent_obj, inline_admin, prefix)
+        kwargs = model_admin.get_formset_kwargs(
+            request, parent_obj, inline_admin, prefix
         )
+        kwargs["files"] = form_files(files)
+        formset = formset_class(**kwargs)
         if not inline_admin.has_change_permission(request, parent_obj):
             # as the change form: view-only rows are not validated
             for index, form in enumerate(formset.initial_forms):
                 if not (operation == "delete" and index == target):
                     form._errors = {}
                     form.cleaned_data = form.initial
-        if not formset.is_valid():
+        with closing_stored_files(sent_files):
+            valid = formset.is_valid()
+        if not valid:
             raise self.formset_error(formset, target)
+        if operation != "delete":
+            check_cleared(formset.forms[target], sent_files)
         parent_form = model_admin.get_form(request, parent_obj, change=True, fields=[])(
             instance=parent_obj
         )
-        with transaction.atomic():
+        uploads = sent_files.values()
+        with self.removing_uploads_on_error(uploads), transaction.atomic():
             model_admin.save_formset(request, parent_form, formset, change=True)
             message = model_admin.construct_change_message(
                 request, parent_form, [formset]
@@ -794,9 +803,10 @@ class AdminProvider(ModelProvider):
         inline = self.static_inline(name)
         opts = inline_class.model._meta
         return [
-            write_parameter(opts, field, partial)
+            write_parameter(opts, field, partial, file_sources=self.file_sources)
             for field in self.inline_field_names(inline, fk, editable=True)
             if is_writable(opts, field)
+            and (self.file_sources or not file_field(opts, field))
         ]
 
     def inline_parameters(self, name, operation, with_parent=True):
@@ -955,35 +965,6 @@ class AdminProvider(ModelProvider):
         return entry
 
 
-def _touches(path, names):
-    """Whether a search or filter path goes through one of ``names``."""
-    return any(part in names for part in path.lstrip("^=@").split("__"))
-
-
-def _display_callables(list_display):
-    return {entry.__name__: entry for entry in list_display if callable(entry)}
-
-
-def _exposed(model_admin, model):
-    """``mcp_exposed = False`` on an admin, an inline or a model keeps it out."""
-    return getattr(model_admin, "mcp_exposed", True) and getattr(
-        model, "mcp_exposed", True
-    )
-
-
-def _excluded(model, exclude):
-    opts = model._meta
-    for entry in exclude:
-        if entry is model:
-            return True
-        if isinstance(entry, str) and entry.lower() in (
-            opts.app_label,
-            opts.label_lower,
-        ):
-            return True
-    return False
-
-
 def build_admin_providers(server, configs):
     """The providers ``MCPServer.register_admin`` stands for."""
     seen = {
@@ -1017,3 +998,68 @@ def build_admin_providers(server, configs):
             providers.append(provider)
             seen.add(model)
     return providers
+
+
+# --- helpers -----------------------------------------------------------------
+
+
+_PLAIN = (
+    str,
+    int,
+    float,
+    bool,
+    type(None),
+    list,
+    dict,
+    datetime.date,
+    datetime.time,
+    decimal.Decimal,
+    uuid.UUID,
+)
+
+
+def plain(value):
+    """A value the JSON encoder can handle; anything else as its string."""
+    if isinstance(value, models.Model):
+        return str(value)
+    if isinstance(value, (list, tuple)):
+        return [plain(item) for item in value]
+    if isinstance(value, str):
+        return str(value)  # SafeString and lazy strings
+    if isinstance(value, _PLAIN):
+        return value
+    return str(value)
+
+
+def _uploads(files):
+    """``request.FILES`` of a write: the uploads, without the cleared fields."""
+    return {name: file for name, file in files.items() if file is not False}
+
+
+def _touches(path, names):
+    """Whether a search or filter path goes through one of ``names``."""
+    return any(part in names for part in path.lstrip("^=@").split("__"))
+
+
+def _display_callables(list_display):
+    return {entry.__name__: entry for entry in list_display if callable(entry)}
+
+
+def _exposed(model_admin, model):
+    """``mcp_exposed = False`` on an admin, an inline or a model keeps it out."""
+    return getattr(model_admin, "mcp_exposed", True) and getattr(
+        model, "mcp_exposed", True
+    )
+
+
+def _excluded(model, exclude):
+    opts = model._meta
+    for entry in exclude:
+        if entry is model:
+            return True
+        if isinstance(entry, str) and entry.lower() in (
+            opts.app_label,
+            opts.label_lower,
+        ):
+            return True
+    return False

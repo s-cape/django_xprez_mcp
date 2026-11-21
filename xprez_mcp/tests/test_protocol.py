@@ -4,6 +4,7 @@ from django.contrib.auth.models import Permission, User
 from django.core.management import call_command
 from django.test import TestCase, override_settings
 from io import StringIO
+from xprez_mcp.permissions import allow_authenticated
 
 
 class MCPTestCase(TestCase):
@@ -83,7 +84,7 @@ class TransportTests(MCPTestCase):
         with override_settings(
             XPREZ_MCP={
                 "TOKEN_RESOLVER": "xprez_mcp.tests.testapp.tokens.resolve",
-                "PERMISSION": "authenticated",
+                "PERMISSION": allow_authenticated,
                 "ALLOWED_ORIGINS": ["https://app.example"],
             }
         ):

@@ -11,12 +11,16 @@ from xprez_mcp import mcp
 from xprez_mcp.auth import BearerToken
 from xprez_mcp.contrib.tokens.auth import resolve
 from xprez_mcp.contrib.tokens.models import Token, hash_key
+from xprez_mcp.permissions import allow_authenticated
 
 from .test_protocol import MCPTestCase
 
 PING = {"jsonrpc": "2.0", "id": 1, "method": "ping"}
 # the test settings without TOKEN_RESOLVER: the installed app resolves keys
-STORED = {"NAME": "test", "PERMISSION": "authenticated"}
+STORED = {
+    "NAME": "test",
+    "PERMISSION": allow_authenticated,
+}
 ADMIN = "/token-admin/"
 
 

@@ -6,13 +6,13 @@ from django.test import RequestFactory, SimpleTestCase, TestCase
 from django.utils.datastructures import MultiValueDict
 
 from xprez_mcp import AdminProvider, MCPServer
-from xprez_mcp.admin_request import (
+from xprez_mcp.providers.admin.request import (
     build_admin_request,
     collected_messages,
     get_admin_request,
     with_messages,
 )
-from xprez_mcp.context import CallContext
+from xprez_mcp.core.context import CallContext
 
 from .testapp.admin import site
 from .testapp.models import Client
