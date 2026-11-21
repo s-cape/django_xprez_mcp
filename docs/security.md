@@ -40,7 +40,8 @@ repeatedly and quickly. Go through this list before exposing a server.
 
 - [ ] `fields` / `serializer` leave out secrets (API keys, tokens, internal
   notes). Use `hidden_fields` on admin providers.
-- [ ] Models holding credentials set `mcp_exposed = False`.
+- [ ] Models holding credentials set `mcp_exposed = False`; third-party ones
+  get it from an app config's `ready()` (`TOTPDevice.mcp_exposed = False`).
 - [ ] Docstrings and results are treated as untrusted by the agent: record
   contents can contain prompt injections, so a write tool reachable from a
   read of user-supplied text deserves a second look.

@@ -106,7 +106,7 @@ only in `providers.admin`, which is imported lazily.
 | `core/` | Specs and items, decorators, `CallContext`, schemas and argument conversion, results, file arguments. |
 | `providers/` | `Provider` (`base`), `ModelProvider` (`model`), model fields as arguments (`fields`), generic mode (`generic`). |
 | `providers/admin/` | `AdminProvider` (`provider`) and the admin request (`request`). |
-| `integrations/` | Optional libraries (DRF), imported lazily. |
+| `integrations/` | Optional libraries, imported lazily: `drf` (serializer fields, validation, errors). |
 | `contrib/` | Optional Django apps (`tokens`). |
 
 Where planned work goes: rate limiting and query budgets next to the code they
@@ -249,11 +249,12 @@ class ClientProvider(ModelProvider):
   `detail_fields` / `detail_serializer` apply to `get` and to write results.
   `fields` may name model fields (a relation gives its pk, a to-many relation
   a list of pks, a file its URL), properties and methods.
-- `serializer` is anything called as
-  `serializer(instance, many=..., context=...)` with a `.data` attribute (DRF
-  serializers). The context carries `ctx`, `request` and `user`. DRF is never
-  imported by the library; when it is loaded, its `ValidationError` and other
-  `APIException`s map to readable errors.
+- For reading, `serializer` is anything called as
+  `serializer(instance, many=..., context=...)` with a `.data` attribute. The
+  context carries `ctx`, `request` and `user`. Writes and write arguments use
+  a DRF serializer's fields and validation; `xprez_mcp.integrations.drf` is the
+  only module that knows DRF's API, and it imports DRF only once it is loaded.
+  DRF's `ValidationError` and other `APIException`s map to readable errors.
 - `query` exists when `search_fields` is set or `search()` is overridden.
   Search is admin-style: every word must match one field (`^` starts with,
   `=` exact, `@` full text, default contains).
@@ -474,6 +475,9 @@ admin's app.
 `register_admin` and of the parent's inline tools, wherever it is
 registered (credentials, for example). Registering such a model or admin
 explicitly (`ModelProvider` or `AdminProvider`) raises `ImproperlyConfigured`.
+For a model or admin the project cannot edit (a third-party one), set the
+attribute from an app config's `ready()`: `TOTPDevice.mcp_exposed = False`.
+It is read when providers are built, so it has the same effect.
 
 **Inlines.** Inline rows are edited one at a time through tools scoped to
 the parent, never nested in the parent's payload (large nested schemas are

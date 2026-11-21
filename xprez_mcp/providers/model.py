@@ -30,6 +30,7 @@ from ..core import schema
 from ..core.files import DEFAULT_SOURCES, SOURCES, FileValue
 from ..core.items import Item, ResourceSpec, ToolSpec
 from ..errors import InvalidArguments, ToolError
+from ..integrations import drf
 from ..permissions import allows, validate_permission
 from .base import Provider
 from .fields import (
@@ -517,7 +518,7 @@ class ModelProvider(Provider):
         else:
             names = [
                 name
-                for name, field in self.serializer().fields.items()
+                for name, field in drf.serializer_fields(self.serializer).items()
                 if not field.read_only
             ]
         return names
@@ -528,7 +529,7 @@ class ModelProvider(Provider):
     def write_parameters(self, partial):
         serializer_fields = {}
         if self.serializer is not None:
-            serializer_fields = self.serializer().fields
+            serializer_fields = drf.serializer_fields(self.serializer)
         params = []
         for name in self.get_write_fields():
             required = nullable = None
@@ -536,8 +537,8 @@ class ModelProvider(Provider):
             if name in serializer_fields:
                 required = serializer_fields[name].required
                 # null is passed to the serializer, which decides
-                nullable = getattr(serializer_fields[name], "allow_null", False)
-                as_file = _is_serializer_file_field(serializer_fields[name])
+                nullable = serializer_fields[name].nullable
+                as_file = serializer_fields[name].is_file
             if as_file and not self.file_sources and file_field(self.opts, name):
                 continue  # no source: file fields are read-only
             params.append(
@@ -559,15 +560,9 @@ class ModelProvider(Provider):
         if self.serializer is not None:
             for name, file in files.items():
                 data[name] = None if file is False else file
-            serializer = self.serializer(
-                instance=instance,
-                data=data,
-                partial=instance is not None,
-                context=self.get_serializer_context(ctx),
-            )
+            context = self.get_serializer_context(ctx)
             with closing_stored_files(files):
-                serializer.is_valid(raise_exception=True)
-            return dict(serializer.validated_data)
+                return drf.validate(self.serializer, data, instance, context)
         names = [*data, *files]
         form_class = modelform_factory(self.model, form=self.form, fields=names)
         form = form_class(data=data, files=form_files(files), instance=instance)
@@ -1074,21 +1069,6 @@ def _decode_cursor(cursor):
     if offset < 0:
         raise InvalidArguments("cursor is invalid.")
     return offset
-
-
-def _is_serializer_file_field(field):
-    """A DRF ``FileField`` or ``ImageField`` that takes uploads. Other fields
-    on a model file field keep their own values: strings, URLs, and subclasses
-    that read something else (``Base64ImageField`` and the like override
-    ``to_internal_value`` to decode a string)."""
-    try:
-        from rest_framework.fields import FileField, ImageField
-    except ImportError:
-        return False
-    if not isinstance(field, FileField):
-        return False
-    reads = type(field).to_internal_value
-    return reads in (FileField.to_internal_value, ImageField.to_internal_value)
 
 
 def _other_upload_prefixes(field):
