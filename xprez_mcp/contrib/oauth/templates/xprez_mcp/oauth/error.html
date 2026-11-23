@@ -1,0 +1,9 @@
+{% extends "xprez_mcp/oauth/base.html" %}
+{% load i18n %}
+
+{% block title %}{% translate "Cannot connect" %}{% endblock %}
+
+{% block content %}
+<h1>{% translate "Cannot connect" %}</h1>
+<p>{{ error }}</p>
+{% endblock %}

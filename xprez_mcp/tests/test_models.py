@@ -29,7 +29,11 @@ class ModelTestCase(MCPTestCase):
     def setUpTestData(cls):
         super().setUpTestData()
         cls.creator = User.objects.create_user("carol")
-        cls.creator.user_permissions.add(Permission.objects.get(codename="add_client"))
+        cls.creator.user_permissions.add(
+            Permission.objects.get(
+                content_type__app_label="testapp", codename="add_client"
+            )
+        )
         cls.tech = Industry.objects.create(name="Tech")
         cls.food = Industry.objects.create(name="Food")
         cls.vip = Tag.objects.create(name="vip")

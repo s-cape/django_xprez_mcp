@@ -1,4 +1,4 @@
-from django.urls import path
+from django.urls import include, path
 
 from xprez_mcp import mcp
 from xprez_mcp.tests.testapp.admin_servers import admin_generic_mcp, admin_mcp
@@ -8,12 +8,14 @@ from xprez_mcp.tests.testapp.file_servers import (
     files_mcp,
 )
 from xprez_mcp.tests.testapp.model_servers import generic_mcp, model_mcp
-from xprez_mcp.tests.testapp.servers import open_mcp, staff_mcp
+from xprez_mcp.tests.testapp.servers import oauth_mcp, open_mcp, staff_mcp
 from xprez_mcp.tests.testapp.token_admin import site as token_site
 from xprez_mcp.tests.testapp.token_admin import token_admin_mcp
 
 urlpatterns = [
+    path("", include("xprez_mcp.contrib.oauth.well_known")),
     path("mcp/", mcp.urls),
+    path("oauth/mcp/", oauth_mcp.urls),
     path("staff/mcp/", staff_mcp.urls),
     path("open/mcp/", open_mcp.urls),
     path("token-admin/mcp/", token_admin_mcp.urls),

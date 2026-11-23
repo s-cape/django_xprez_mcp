@@ -1,0 +1,20 @@
+{% load i18n %}<!doctype html>
+{% get_current_language as LANGUAGE_CODE %}
+<html lang="{{ LANGUAGE_CODE }}">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>{% block title %}{% endblock %}</title>
+  <style>
+    body { font: 16px/1.5 system-ui, sans-serif; max-width: 32rem; margin: 3rem auto; padding: 0 1rem; }
+    .host { font-weight: 600; }
+    .warning { padding: .75rem; border: 1px solid #d97706; border-radius: .375rem; }
+    .actions { display: flex; gap: .5rem; margin-top: 1.5rem; }
+    button { font: inherit; padding: .5rem 1rem; }
+  </style>
+</head>
+<body>
+{% block content %}{% endblock %}
+</body>
+</html>

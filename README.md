@@ -32,6 +32,23 @@ revoked by deleting). Projects with their own token model leave the app out
 and set `XPREZ_MCP["TOKEN_RESOLVER"] = "myapp.tokens.resolve"`
 (`(request, token) -> user | None`).
 
+### Enable OAuth in 3 steps
+
+For claude.ai connectors and other clients that sign in instead of sending a
+pasted key:
+
+1. Add `"xprez_mcp.contrib.oauth"` to `INSTALLED_APPS` and run `migrate`.
+2. Add `path("", include("xprez_mcp.contrib.oauth.well_known"))` to the root
+   `urls.py`.
+3. Put `"xprez_mcp.contrib.oauth.auth.access_token"` first in
+   `XPREZ_MCP["AUTHENTICATION"]` (keep `"xprez_mcp.auth.bearer_token"` after
+   it if personal keys should keep working).
+
+Users add `https://<site>/mcp/` as a connector, sign in and click "Allow".
+Override `xprez_mcp/oauth/base.html` to style the consent page, and run
+`manage.py mcp_oauth_cleanup` daily. Details in
+[docs/design.md](docs/design.md#oauth-xprez_mcpcontriboauth).
+
 ```python
 # myapp/mcp.py: discovered automatically, like admin.py
 from xprez_mcp import Provider, mcp, prompt, resource, tool

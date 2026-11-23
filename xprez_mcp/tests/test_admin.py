@@ -17,7 +17,11 @@ from .testapp.models import Client, ColoredTag, Contact, Industry, Swatch, Tag
 
 
 def grant(user, *codenames):
-    user.user_permissions.add(*Permission.objects.filter(codename__in=codenames))
+    user.user_permissions.add(
+        *Permission.objects.filter(
+            content_type__app_label="testapp", codename__in=codenames
+        )
+    )
 
 
 class AdminTestCase(ModelTestCase):
