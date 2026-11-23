@@ -125,7 +125,8 @@ class Grant(models.Model):
         verbose_name_plural = "MCP connections"
         constraints = [
             models.UniqueConstraint(
-                fields=["user", "client", "resource"], name="xprez_mcp_oauth_grant"
+                fields=["user", "client", "resource"],
+                name="xprez_mcp_oauth_grant_unique",
             )
         ]
 
