@@ -16,6 +16,7 @@ from xprez_mcp.permissions import (
     allow_authenticated,
     allow_staff,
     allows,
+    permission_from_setting,
     validate_permission,
 )
 
@@ -74,7 +75,17 @@ class ServerAccessTests(MCPTestCase):
             ids = [e.id for e in check_servers() if e.obj.name == "django"]
         self.assertEqual(ids, [])  # closed on purpose: no E001
 
-    def test_no_strings(self):
+    def test_dotted_path_in_the_setting(self):
+        settings = {
+            "TOKEN_RESOLVER": RESOLVER,
+            "PERMISSION": "xprez_mcp.permissions.allow_staff",
+        }
+        with override_settings(XPREZ_MCP=settings):
+            self.assertIs(MCPServer(name="x").permission, allow_staff)
+            self.assertEqual(self.post(PING).status_code, 403)
+            self.assertEqual(self.post(PING, token="token-bob").status_code, 200)
+
+    def test_no_strings_as_argument(self):
         for permission in (
             "auth.view_user",
             "xprez_mcp.permissions.allow_staff",
@@ -85,6 +96,8 @@ class ServerAccessTests(MCPTestCase):
                 with self.assertRaisesMessage(ImproperlyConfigured, "has_perm(") as e:
                     server.permission
                 self.assertIn("Invalid server permission", str(e.exception))
+                if isinstance(permission, str):
+                    self.assertIn('only in XPREZ_MCP["PERMISSION"]', str(e.exception))
 
     def test_anonymous_needs_true(self):
         response = self.post(PING, token=None, url="/open/mcp/")
@@ -140,12 +153,39 @@ class PermissionTests(SimpleTestCase):
                 with self.assertRaisesMessage(ImproperlyConfigured, "has_perm("):
                     validate_permission(permission)
 
+    def test_setting_values(self):
+        for permission in (None, True, False, allow_staff):
+            with self.subTest(permission=permission):
+                self.assertIs(permission_from_setting(permission), permission)
+        self.assertIs(
+            permission_from_setting("xprez_mcp.permissions.allow_staff"), allow_staff
+        )
+        with self.assertRaisesMessage(ImproperlyConfigured, "has_perm("):
+            permission_from_setting(["xprez_mcp.permissions.allow_staff"])
+
+    def test_setting_errors(self):
+        cases = [
+            ("xprez_mcp.permissions.allow_stuff", "cannot be imported"),
+            ("xprez_mcp.nowhere.allow_staff", "cannot be imported"),
+            ("xprez_mcp.permissions.SETTING", "not a function"),
+            ("auth.view_user", "ctx.user.has_perm('auth.view_user')"),
+        ]
+        # no shorthands
+        cases += [(name, "cannot be imported") for name in ("staff", "any")]
+        cases.append(("authenticated", "cannot be imported"))
+        for permission, message in cases:
+            with self.subTest(permission=permission):
+                with self.assertRaisesMessage(ImproperlyConfigured, message):
+                    permission_from_setting(permission)
+
     def test_item_permission_checked_when_declared(self):
         def ping(ctx):
             return "pong"
 
         with self.assertRaisesMessage(ImproperlyConfigured, "permission of ping"):
             ToolSpec(ping, permission="auth.view_user")
+        with self.assertRaisesMessage(ImproperlyConfigured, "permission of ping"):
+            ToolSpec(ping, permission="xprez_mcp.permissions.allow_staff")
         self.assertIs(ToolSpec(ping, permission=allow_staff).permission, allow_staff)
 
     def test_importable_from_settings(self):
@@ -177,6 +217,19 @@ class CheckTests(SimpleTestCase):
             errors = [error for error in check_servers() if error.obj.name == "django"]
         self.assertEqual([error.id for error in errors], ["xprez_mcp.E004"])
         self.assertIn("has_perm", errors[0].msg)
+
+    def test_dotted_path_permission(self):
+        cases = {
+            "xprez_mcp.permissions.allow_staff": [],
+            "xprez_mcp.permissions.allow_stuff": ["xprez_mcp.E004"],
+            "xprez_mcp.permissions.SETTING": ["xprez_mcp.E004"],
+            "staff": ["xprez_mcp.E004"],
+        }
+        for permission, ids in cases.items():
+            with self.subTest(permission=permission):
+                with override_settings(XPREZ_MCP={"PERMISSION": permission}):
+                    errors = [e.id for e in check_servers() if e.obj.name == "django"]
+                self.assertEqual(errors, ids)
 
     def test_unmounted_servers_ignored(self):
         server = MCPServer(name="unmounted")
