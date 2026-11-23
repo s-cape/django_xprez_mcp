@@ -134,3 +134,7 @@ python3 -m venv .venv
 .venv/bin/python -m django test xprez_mcp.tests --settings=xprez_mcp.tests.settings
 .venv/bin/black --check .
 ```
+
+Tests run on SQLite in memory. To run them on PostgreSQL, install
+`psycopg[binary]` and set `POSTGRES_HOST` (plus `POSTGRES_PORT`, `POSTGRES_DB`,
+`POSTGRES_USER`, `POSTGRES_PASSWORD` as needed).
