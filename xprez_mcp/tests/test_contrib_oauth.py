@@ -221,6 +221,24 @@ class MetadataTests(OAuthTestCase):
         self.assertEqual(self.client.get("/oauth/mcp/oauth/token").status_code, 404)
         self.assertEqual(self.client.get("/nothing").status_code, 404)
 
+    def test_challenge_for_newer_protocol_version(self):
+        """A client of a newer spec learns about sign-in before anything else."""
+        initialize = {
+            "jsonrpc": "2.0",
+            "id": 0,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2099-01-01",
+                "capabilities": {},
+                "clientInfo": {"name": "test", "version": "1"},
+            },
+        }
+        response = self.post(
+            initialize, token=None, HTTP_MCP_PROTOCOL_VERSION="2099-01-01"
+        )
+        self.assertEqual(response.status_code, 401)
+        self.assertIn("resource_metadata=", response["WWW-Authenticate"])
+
     def test_servers_without_backend_unchanged(self):
         response = self.post(WHOAMI, token=None, url="/mcp/")
         self.assertEqual(response["WWW-Authenticate"], "Bearer")
