@@ -57,3 +57,33 @@ jobs:
           cache: pip
       - run: pip install -e . "Django~=5.2.0" djangorestframework
       - run: python -m django test xprez_mcp.tests --settings=xprez_mcp.tests.settings
+
+  test-postgresql:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      POSTGRES_HOST: localhost
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: postgres
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+          cache: pip
+      - run: pip install -e . "Django~=5.2.0" "psycopg[binary]"
+      - run: python -m django test xprez_mcp.tests --settings=xprez_mcp.tests.settings
