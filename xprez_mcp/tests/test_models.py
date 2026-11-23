@@ -551,6 +551,8 @@ class ConfigurationTests(SimpleTestCase):
     def test_permissions_are_callables(self):
         with self.assertRaisesMessage(ImproperlyConfigured, "permissions['update']"):
             self.provider(permissions={"update": "testapp.change_client"})
+        with self.assertRaisesMessage(ImproperlyConfigured, "only in XPREZ_MCP"):
+            self.provider(permissions={"update": "xprez_mcp.permissions.allow_staff"})
 
     def test_generic_name_clash(self):
         server = MCPServer(name="clash", exposure="generic")

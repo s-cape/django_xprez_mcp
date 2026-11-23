@@ -13,11 +13,10 @@ Guides: [getting started](docs/getting-started.md),
 ```python
 # settings.py
 INSTALLED_APPS = [..., "xprez_mcp", "xprez_mcp.contrib.tokens"]
-from xprez_mcp.permissions import allow_staff
 
 XPREZ_MCP = {
     # required: who may use the server at all
-    "PERMISSION": allow_staff,
+    "PERMISSION": "xprez_mcp.permissions.allow_staff",
 }
 
 # urls.py
