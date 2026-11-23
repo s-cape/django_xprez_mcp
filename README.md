@@ -12,7 +12,7 @@ Guides: [getting started](docs/getting-started.md),
 
 ```python
 # settings.py
-INSTALLED_APPS = [..., "xprez_mcp", "xprez_mcp.contrib.tokens"]
+INSTALLED_APPS = [..., "xprez_mcp"]  # plus one or both sign-in apps below
 from xprez_mcp.permissions import allow_staff
 
 XPREZ_MCP = {
@@ -26,28 +26,37 @@ from xprez_mcp import mcp
 urlpatterns = [path("mcp/", mcp.urls)]
 ```
 
-Clients send `Authorization: Bearer <key>`. With `xprez_mcp.contrib.tokens`
-users create keys under "MCP tokens" in the admin (shown once, stored hashed,
-revoked by deleting). Projects with their own token model leave the app out
-and set `XPREZ_MCP["TOKEN_RESOLVER"] = "myapp.tokens.resolve"`
-(`(request, token) -> user | None`).
+Clients sign in one of two ways; enable one or both (details in
+[getting started](docs/getting-started.md#choose-how-clients-authenticate)).
 
-### Enable OAuth in 3 steps
-
-For claude.ai connectors and other clients that sign in instead of sending a
-pasted key:
+**OAuth sign-in** (`xprez_mcp.contrib.oauth`): the user pastes
+`https://<site>/mcp/` into the assistant (claude.ai and ChatGPT connectors,
+Claude Code, Cursor), signs in with the site's login and clicks "Allow".
 
 1. Add `"xprez_mcp.contrib.oauth"` to `INSTALLED_APPS` and run `migrate`.
 2. Add `path("", include("xprez_mcp.contrib.oauth.well_known"))` to the root
    `urls.py`.
-3. Put `"xprez_mcp.contrib.oauth.auth.access_token"` first in
-   `XPREZ_MCP["AUTHENTICATION"]` (keep `"xprez_mcp.auth.bearer_token"` after
-   it if personal keys should keep working).
+3. Set `XPREZ_MCP["AUTHENTICATION"] = ["xprez_mcp.contrib.oauth.auth.access_token"]`.
 
-Users add `https://<site>/mcp/` as a connector, sign in and click "Allow".
-Override `xprez_mcp/oauth/base.html` to style the consent page, and run
-`manage.py mcp_oauth_cleanup` daily. Details in
-[docs/design.md](docs/design.md#oauth-xprez_mcpcontriboauth).
+Override `xprez_mcp/oauth/base.html` to style the consent page, and schedule
+`manage.py mcp_oauth_cleanup` daily.
+
+**Bearer tokens** (`xprez_mcp.contrib.tokens`): the user creates a key under
+"MCP tokens" in the admin and the client sends `Authorization: Bearer <key>`.
+Suits scripts, CI and clients without OAuth.
+
+1. Add `"xprez_mcp.contrib.tokens"` to `INSTALLED_APPS` and run `migrate`.
+2. Nothing else: `xprez_mcp.auth.bearer_token` is the default
+   `AUTHENTICATION`.
+
+Keys are shown once, stored hashed and revoked by deleting. Projects with
+their own token model leave the app out and set
+`XPREZ_MCP["TOKEN_RESOLVER"] = "myapp.tokens.resolve"`
+(`(request, token) -> user | None`).
+
+**Both:** list OAuth first,
+`["xprez_mcp.contrib.oauth.auth.access_token", "xprez_mcp.auth.bearer_token"]`,
+since `bearer_token` rejects keys it does not know.
 
 ```python
 # myapp/mcp.py: discovered automatically, like admin.py

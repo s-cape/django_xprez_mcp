@@ -14,7 +14,7 @@ pip install django-xprez-mcp
 INSTALLED_APPS = [
     ...,
     "xprez_mcp",
-    "xprez_mcp.contrib.tokens",  # optional: bearer tokens managed in the admin
+    # and one or both ways to sign in, see "Choose how clients authenticate"
 ]
 
 from xprez_mcp.permissions import allow_staff
@@ -133,20 +133,119 @@ Check what the server exposes, and to whom:
 ./manage.py mcp_inspect --user alice   # marks what alice cannot see
 ```
 
-## Create a token
+## Choose how clients authenticate
 
-With `xprez_mcp.contrib.tokens`, a user opens "MCP tokens" in the admin and
-adds one. The key (`mcp_...`) is shown once, after "Save"; only its hash is
-stored. Deleting the token revokes it.
+Two options, each an optional app. Enable one or both.
+
+| | OAuth sign-in | Bearer tokens |
+|---|---|---|
+| App | `xprez_mcp.contrib.oauth` | `xprez_mcp.contrib.tokens` |
+| The user | pastes the server URL, signs in with the site's login, clicks "Allow" | creates a key in the admin and pastes it into the client |
+| Suits | assistants that sign in: claude.ai and ChatGPT connectors, Claude Code, Cursor, MCP Inspector | scripts, CI, clients without OAuth, `curl` |
+| Lifetime | access tokens 1 h, refresh tokens rotated on every use | until it expires (`expires`) or is deleted |
+| Revoking | "Disconnect" per connected client | deleting the token |
+
+Either way, only hashes are stored, and the server `PERMISSION` decides
+what a signed-in user may do.
+
+### OAuth sign-in
+
+```python
+# settings.py
+INSTALLED_APPS = [..., "xprez_mcp", "xprez_mcp.contrib.oauth"]
+XPREZ_MCP = {
+    "PERMISSION": allow_staff,
+    "AUTHENTICATION": ["xprez_mcp.contrib.oauth.auth.access_token"],
+}
+```
+
+```python
+# urls.py
+from django.urls import include, path
+
+urlpatterns = [
+    ...,
+    path("", include("xprez_mcp.contrib.oauth.well_known")),
+    path("mcp/", mcp.urls),
+]
+```
+
+```bash
+./manage.py migrate
+```
+
+The root include serves the metadata clients look for at
+`/.well-known/...`. Sign-in uses the site's login (`LOGIN_URL`), so users
+must be able to log in there. Then:
+
+- Override `xprez_mcp/oauth/base.html` to give the consent page the site's
+  layout; its strings are translatable.
+- Show connected clients on the account page with
+  `xprez_mcp.contrib.oauth.views.ConnectionsView`, or with
+  `connections.for_user()` / `connections.disconnect()` in a view of your
+  own.
+- Schedule `./manage.py mcp_oauth_cleanup` daily (cron, a systemd timer,
+  Celery beat): nothing runs it for you. Without it, expired rows and
+  clients that registered but never connected pile up.
+- Behind a proxy, make sure the request knows the public `https://` origin
+  (`SECURE_PROXY_SSL_HEADER`, or `XPREZ_MCP["OAUTH"]["BASE_URL"]`):
+  clients compare it with the URL they were given.
+
+### Bearer tokens
+
+```python
+# settings.py
+INSTALLED_APPS = [..., "xprez_mcp", "xprez_mcp.contrib.tokens"]
+```
+
+```bash
+./manage.py migrate
+```
+
+`xprez_mcp.auth.bearer_token` is the default `AUTHENTICATION`, so nothing
+else is needed. A user opens "MCP tokens" in the admin and adds one. The key
+(`mcp_...`) is shown once, after "Save"; only its hash is stored. Deleting
+the token revokes it.
 
 Projects with their own token model leave the app out and set
 `XPREZ_MCP["TOKEN_RESOLVER"] = "myapp.tokens.resolve"`, a callable
 `(request, token) -> user | None`.
 
+### Both
+
+Install both apps, include the well-known URLs, and list OAuth first:
+`bearer_token` rejects keys it does not know, OAuth access tokens included
+(`manage.py check` warns with `xprez_mcp_oauth.W002` otherwise).
+
+```python
+XPREZ_MCP = {
+    "PERMISSION": allow_staff,
+    "AUTHENTICATION": [
+        "xprez_mcp.contrib.oauth.auth.access_token",
+        "xprez_mcp.auth.bearer_token",
+    ],
+}
+```
+
 ## Connect a client
 
 The endpoint is plain HTTP (the "Streamable HTTP" transport, JSON responses
-only). Clients send the key as `Authorization: Bearer <key>`.
+only) at `https://example.com/mcp/`.
+
+### With OAuth
+
+Give the client only the URL. It finds the sign-in on its own, opens the
+site's login and consent page, and keeps its tokens fresh.
+
+- claude.ai: add `https://example.com/mcp/` as a custom connector.
+- Claude Code: `claude mcp add --transport http myproject https://example.com/mcp/`,
+  then sign in when it asks.
+- Cursor, MCP Inspector and other OAuth-capable clients: the URL, without a
+  header.
+
+### With a bearer token
+
+Clients send the key as `Authorization: Bearer <key>`.
 
 Cursor (`.cursor/mcp.json`):
 
@@ -182,4 +281,4 @@ curl -s https://example.com/mcp/ \
 - [Permissions](permissions.md): who sees which tools and rows.
 - [Security](security.md): a checklist before exposing a server.
 - [design.md](design.md): admin providers, generic mode, several servers,
-  settings.
+  how OAuth works, settings.
