@@ -63,9 +63,8 @@ class ResolverTests(MCPTestCase):
         self.assertEqual(token.key_hash, hash_key(key))
         prefix = f"mcp_{token.key_id}_"
         self.assertTrue(key.startswith(prefix))
-        # the whole secret: token_urlsafe() output can itself contain "_"
         self.assertNotIn(
-            key[len(prefix) :],
+            key[len(prefix) :],  # the secret may itself contain "_"
             json.dumps(list(Token.objects.values()), default=str),
         )
 
