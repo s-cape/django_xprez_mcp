@@ -4,6 +4,7 @@ from django.contrib.auth.models import Permission, User
 from django.core.management import call_command
 from django.test import TestCase, override_settings
 from io import StringIO
+from xprez_mcp import mcp
 from xprez_mcp.permissions import allow_authenticated
 
 
@@ -97,6 +98,36 @@ class TransportTests(MCPTestCase):
         self.assertEqual(response.status_code, 400)
         response = self.post(message, HTTP_MCP_PROTOCOL_VERSION="2025-06-18")
         self.assertEqual(response.status_code, 200)
+        # notifications are checked too
+        notification = {"jsonrpc": "2.0", "method": "notifications/initialized"}
+        response = self.post(notification, HTTP_MCP_PROTOCOL_VERSION="1999-01-01")
+        self.assertEqual(response.status_code, 400)
+
+    def test_initialize_with_newer_version(self):
+        """initialize negotiates in its body; the header is not rejected."""
+        message = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2099-01-01",
+                "capabilities": {},
+                "clientInfo": {"name": "test", "version": "1"},
+            },
+        }
+        response = self.post(message, HTTP_MCP_PROTOCOL_VERSION="2099-01-01")
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(
+            response.json()["result"]["protocolVersion"], mcp.protocol_versions[0]
+        )
+
+    def test_unsupported_version_without_token(self):
+        """Authentication comes first: no token means 401, not 400."""
+        message = {"jsonrpc": "2.0", "id": 1, "method": "ping"}
+        response = self.post(
+            message, token=None, HTTP_MCP_PROTOCOL_VERSION="1999-01-01"
+        )
+        self.assertEqual(response.status_code, 401)
 
     def test_notifications_and_responses(self):
         response = self.post({"jsonrpc": "2.0", "method": "notifications/initialized"})

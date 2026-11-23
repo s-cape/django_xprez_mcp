@@ -835,7 +835,11 @@ class DocumentProvider(ModelProvider):
   `nextCursor`: `XPREZ_MCP["LIST_PAGE_SIZE"]` (default `None`, one page) or
   `MCPServer(list_page_size=...)` (`0` turns it off).
 - Protocol versions: `2025-06-18`, `2025-03-26`, `2024-11-05`. A newer spec
-  version is reviewed and added by hand.
+  version is reviewed and added by hand. `initialize` answers a version it
+  does not know with the newest it supports. Other requests with an
+  unsupported `MCP-Protocol-Version` header get `400`, after
+  authentication, so a client of a newer spec without a token still gets
+  the `401` that points it to sign-in.
 - Requests must be `application/json`. A browser `Origin` must match the host
   or `XPREZ_MCP["ALLOWED_ORIGINS"]` (DNS rebinding protection; per server
   `MCPServer(allowed_origins=[...])`). Together these

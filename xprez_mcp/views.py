@@ -33,10 +33,12 @@ class MCPView(View):
             return HttpResponse("Origin not allowed.", status=403)
         if request.content_type != "application/json":
             return HttpResponse("Content-Type must be application/json.", status=415)
-        version = request.headers.get("MCP-Protocol-Version")
-        if version and version not in server.protocol_versions:
-            return HttpResponse("Unsupported MCP-Protocol-Version.", status=400)
+        header_version = request.headers.get("MCP-Protocol-Version")
+        # only a supported version reaches the context; checked further down
+        version = header_version if header_version in server.protocol_versions else None
 
+        # before the version check: an unauthenticated client of a newer spec
+        # must get the 401 that points it to sign-in, not a 400
         try:
             user = server.authenticate(request)
         except AuthenticationFailed as error:
@@ -56,6 +58,10 @@ class MCPView(View):
             return rpc_error(None, INVALID_REQUEST, "Batches are not supported.")
         if not isinstance(message, dict) or message.get("jsonrpc") != "2.0":
             return rpc_error(None, INVALID_REQUEST, "Invalid request.")
+        # initialize negotiates the version in its body, so its header is not
+        # checked; later requests carry the negotiated one
+        if header_version and version is None and message.get("method") != "initialize":
+            return HttpResponse("Unsupported MCP-Protocol-Version.", status=400)
         if "method" not in message or "id" not in message:
             # notifications and responses to server requests
             return HttpResponse(status=202)
