@@ -61,9 +61,10 @@ class ResolverTests(MCPTestCase):
         token, key = self.key()
         token.refresh_from_db()
         self.assertEqual(token.key_hash, hash_key(key))
-        self.assertTrue(key.startswith(f"mcp_{token.key_id}_"))
+        prefix = f"mcp_{token.key_id}_"
+        self.assertTrue(key.startswith(prefix))
         self.assertNotIn(
-            key.rsplit("_", 1)[-1],
+            key[len(prefix) :],  # the secret may itself contain "_"
             json.dumps(list(Token.objects.values()), default=str),
         )
 
