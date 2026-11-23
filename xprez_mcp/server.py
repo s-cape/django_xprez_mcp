@@ -38,7 +38,7 @@ from .errors import (
     ToolError,
 )
 from .integrations import drf
-from .permissions import allows, validate_permission
+from .permissions import allows, permission_from_setting, validate_permission
 from .providers.base import Provider
 
 logger = logging.getLogger("xprez_mcp")
@@ -122,13 +122,13 @@ class MCPServer:
     def permission(self):
         """Who may use the server: ``f(ctx) -> bool``, a bool, or None (nobody).
 
-        ``MCPServer(permission=...)``, else ``XPREZ_MCP["PERMISSION"]``; also
-        ``True`` (everyone) or ``False`` (nobody, on purpose).
+        ``MCPServer(permission=...)``, else ``XPREZ_MCP["PERMISSION"]`` (which
+        may be a dotted path); also ``True`` (everyone) or ``False`` (nobody,
+        on purpose).
         """
-        permission = self._permission
-        if permission is None:
-            permission = conf.get("PERMISSION")
-        return validate_permission(permission, "server permission")
+        if self._permission is None:
+            return permission_from_setting(conf.get("PERMISSION"))
+        return validate_permission(self._permission, "server permission")
 
     @property
     def list_page_size(self):

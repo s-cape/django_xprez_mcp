@@ -14,11 +14,12 @@ Breaking in 0.6:
 
 - Every permission (server access, `@tool(permission=...)`,
   `ModelProvider.permissions`) is a function `f(ctx) -> bool`, `True` or
-  `False`, nothing else: no strings, neither Django permission names nor
-  dotted paths nor the `"staff"` / `"authenticated"` / `"any"` shorthands.
-  Check a Django permission in the function:
-  `lambda ctx: ctx.user.has_perm("crm.use_mcp")`; `allow_staff` and
-  `allow_authenticated` stay in `xprez_mcp.permissions`. A string raises
+  `False`: no Django permission names and no `"staff"` /
+  `"authenticated"` / `"any"` shorthands. Check a Django permission in the
+  function: `lambda ctx: ctx.user.has_perm("crm.use_mcp")`; `allow_staff`
+  and `allow_authenticated` stay in `xprez_mcp.permissions`. The one string
+  allowed is a dotted path to such a function in the `PERMISSION` setting
+  (`"xprez_mcp.permissions.allow_staff"`). Any other string raises
   `ImproperlyConfigured` where it is declared, and in `PERMISSION` fails
   `manage.py check` with `xprez_mcp.E004`. `allow_any`,
   `PERMISSION_CALLBACK` and `check_permission` are gone.
@@ -584,35 +585,45 @@ so a permission on such a server checks it first:
 `lambda ctx: ctx.user is not None and ctx.user.has_perm(...)`.
 
 Common callables ship in `xprez_mcp.permissions`: `allow_staff`,
-`allow_authenticated`. No strings: in settings a permission name would read
-like a dotted path, and one rule for every place is easier to remember. A
-string or a list raises `ImproperlyConfigured` where it is declared (when the
-decorator or the provider class is read). On an item, no permission and
-`True` both mean open.
+`allow_authenticated`. In code, no strings: a permission name would read
+like a dotted path. A string or a list raises `ImproperlyConfigured` where it
+is declared (when the decorator or the provider class is read). Only the
+`PERMISSION` setting also takes a dotted path, as Django settings name
+callables (see Server access). On an item, no permission and `True` both
+mean open.
 
 ### Server access
 
 Server access is a function, `True` or `False`; Django permissions are
-checked inside the function. Settings hold the callable itself: a lambda,
-or a function imported from a module that does not import models (settings
-load before the app registry).
+checked inside the function. The `PERMISSION` setting also takes a dotted
+path to the function, like `AUTHENTICATION`. It is imported when the
+permission is first needed, so the module may import models:
+
+```python
+XPREZ_MCP = {
+    "PERMISSION": "crm.mcp.can_connect",  # def can_connect(ctx) -> bool
+}
+```
 
 ```python
 from xprez_mcp.permissions import allow_staff
 
-XPREZ_MCP = {
-    "PERMISSION": lambda ctx: ctx.user.is_staff and ctx.user.has_perm("crm.use_mcp"),
-}
-
 staff_mcp = MCPServer(name="staff", permission=allow_staff)
 ```
 
-- No default. `MCPServer(permission=...)` replaces the setting.
+- No default. `MCPServer(permission=...)` replaces the setting and takes
+  no strings.
+- The setting may also hold the callable itself (a lambda, or a function
+  from a module that does not import models: settings load before the app
+  registry).
 - `True` lets everyone in; `False` lets nobody in, like
   no permission, but on purpose, so it does not raise `xprez_mcp.E001`.
-- Anything else (a string, a list) raises `ImproperlyConfigured` with an
-  example function, and a mounted server with such a value fails
-  `manage.py check` (`xprez_mcp.E004`).
+- Anything else raises `ImproperlyConfigured`, and a mounted server with
+  such a value fails `manage.py check` (`xprez_mcp.E004`): a string in the
+  argument, a list, a path that does not import or imports something not
+  callable, and a shorthand like `"staff"`. A string shaped like a Django
+  permission (`"crm.use_mcp"`) that does not import gets the hint
+  `lambda ctx: ctx.user.has_perm("crm.use_mcp")`.
 
 - Checked after authentication and before any method, `initialize` included.
   A user who fails it gets `403`, so the client fails when it connects
@@ -862,7 +873,7 @@ Django; codes and tokens are random and only their SHA-256 hash is stored.
 ```python
 INSTALLED_APPS = [..., "xprez_mcp", "xprez_mcp.contrib.oauth"]
 XPREZ_MCP = {
-    "PERMISSION": allow_authenticated,
+    "PERMISSION": "xprez_mcp.permissions.allow_authenticated",
     # bearer_token only if personal tokens should keep working, and after it
     "AUTHENTICATION": [
         "xprez_mcp.contrib.oauth.auth.access_token",
@@ -995,7 +1006,7 @@ authenticate with.
 XPREZ_MCP = {
     "NAME": "django",              # serverInfo.name of the default server
     "VERSION": "0.0.0",
-    "PERMISSION": None,            # required: f(ctx) -> bool, True or False
+    "PERMISSION": None,            # required: f(ctx) -> bool, a dotted path to one, True or False
     "AUTODISCOVER": True,
     "AUTODISCOVER_MODULE": "mcp",
     "AUTHENTICATION": ["xprez_mcp.auth.bearer_token"],

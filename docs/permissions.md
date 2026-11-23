@@ -20,9 +20,11 @@ so their existence does not leak. Check the result for a user with
 ## Writing a permission
 
 A permission is the same everywhere (server access, items, model actions):
-a callable `f(ctx) -> bool`, `True` or `False`. No strings: check a Django
-permission inside the callable, `lambda ctx: ctx.user.has_perm("crm.change_client")`.
-`xprez_mcp.permissions` ships `allow_staff` and `allow_authenticated`.
+a callable `f(ctx) -> bool`, `True` or `False`. No strings in code: check a
+Django permission inside the callable,
+`lambda ctx: ctx.user.has_perm("crm.change_client")`. The `PERMISSION`
+setting also takes a dotted path to the callable, imported when first
+needed. `xprez_mcp.permissions` ships `allow_staff` and `allow_authenticated`.
 `ctx.user` is None on anonymous calls (`allow_anonymous=True`), so there
 check it first: `ctx.user is not None and ctx.user.has_perm(...)`.
 
@@ -31,9 +33,14 @@ check it first: `ctx.user is not None and ctx.user.has_perm(...)`.
 Only staff with a project permission may connect:
 
 ```python
+# crm/mcp.py
+def can_connect(ctx):
+    return ctx.user.is_staff and ctx.user.has_perm("crm.use_mcp")
+
+
 # settings.py
 XPREZ_MCP = {
-    "PERMISSION": lambda ctx: ctx.user.is_staff and ctx.user.has_perm("crm.use_mcp"),
+    "PERMISSION": "crm.mcp.can_connect",
 }
 ```
 

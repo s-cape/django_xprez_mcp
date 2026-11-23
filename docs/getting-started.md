@@ -17,11 +17,9 @@ INSTALLED_APPS = [
     # and one or both ways to sign in, see "Choose how clients authenticate"
 ]
 
-from xprez_mcp.permissions import allow_staff
-
 XPREZ_MCP = {
     # required: who may use the server at all
-    "PERMISSION": allow_staff,
+    "PERMISSION": "xprez_mcp.permissions.allow_staff",
 }
 ```
 
@@ -40,31 +38,39 @@ urlpatterns = [
 ./manage.py migrate
 ```
 
-`PERMISSION` decides who may use the server: a function, `True` or `False`
-(no strings). It has no default: without it, `manage.py check` fails with
-`xprez_mcp.E001` and the endpoint answers `403`.
+`PERMISSION` decides who may use the server: a dotted path to a function
+(like `AUTHENTICATION`), the function itself, `True` or `False`. It has no
+default: without it, `manage.py check` fails with `xprez_mcp.E001` and the
+endpoint answers `403`. A path that does not import fails the check too
+(`xprez_mcp.E004`).
 
 | `PERMISSION` | Who gets in |
 |---|---|
-| `allow_staff` | staff users |
-| `allow_authenticated` | every authenticated user |
+| `"xprez_mcp.permissions.allow_staff"` | staff users |
+| `"xprez_mcp.permissions.allow_authenticated"` | every authenticated user |
 | `lambda ctx: ctx.user.has_perm("myapp.use_mcp")` | users with that Django permission |
-| a function of your own | whoever it returns `True` for |
+| `"myapp.mcp.can_connect"`, a function of your own | whoever it returns `True` for |
 | `True` | everyone who authenticates (and anonymous callers with `allow_anonymous=True`) |
 | `False` | nobody: the server is closed on purpose |
 
-`allow_staff` and `allow_authenticated` come from `xprez_mcp.permissions`,
-which is safe to import in settings. A function takes the call context and
-returns a boolean; a lambda right in settings needs no import:
+A function takes the call context and returns a boolean. Name your own by
+its dotted path; it is imported when first needed, so its module may import
+models:
 
 ```python
+# myapp/mcp.py
+def can_connect(ctx):
+    return ctx.user.is_staff and ctx.user.has_perm("myapp.use_mcp")
+
+
+# settings.py
 XPREZ_MCP = {
-    "PERMISSION": lambda ctx: ctx.user.is_staff and ctx.user.has_perm("myapp.use_mcp"),
+    "PERMISSION": "myapp.mcp.can_connect",
 }
 ```
 
-A function in a module of your own works too, as long as that module does
-not import models: settings load before the app registry is ready.
+A Django permission name is not a path: `"myapp.use_mcp"` fails the check
+with a hint to wrap it in `lambda ctx: ctx.user.has_perm("myapp.use_mcp")`.
 
 A Django permission (`"<app_label>.<codename>"`) is granted in the admin like
 any other; superusers have it implicitly. The library ships none, so declare
@@ -79,7 +85,8 @@ class Note(models.Model):
         permissions = [("use_mcp", "Can use the MCP server")]
 ```
 
-A server of your own takes the same values:
+A server of your own takes a function, `True` or `False` (in code, no
+strings):
 
 ```python
 from xprez_mcp import MCPServer
@@ -154,7 +161,7 @@ what a signed-in user may do.
 # settings.py
 INSTALLED_APPS = [..., "xprez_mcp", "xprez_mcp.contrib.oauth"]
 XPREZ_MCP = {
-    "PERMISSION": allow_staff,
+    "PERMISSION": "xprez_mcp.permissions.allow_staff",
     "AUTHENTICATION": ["xprez_mcp.contrib.oauth.auth.access_token"],
 }
 ```
@@ -219,7 +226,7 @@ Install both apps, include the well-known URLs, and list OAuth first:
 
 ```python
 XPREZ_MCP = {
-    "PERMISSION": allow_staff,
+    "PERMISSION": "xprez_mcp.permissions.allow_staff",
     "AUTHENTICATION": [
         "xprez_mcp.contrib.oauth.auth.access_token",
         "xprez_mcp.auth.bearer_token",
