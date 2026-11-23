@@ -208,7 +208,8 @@ class Migration(migrations.Migration):
         migrations.AddConstraint(
             model_name="grant",
             constraint=models.UniqueConstraint(
-                fields=("user", "client", "resource"), name="xprez_mcp_oauth_grant"
+                fields=("user", "client", "resource"),
+                name="xprez_mcp_oauth_grant_unique",
             ),
         ),
     ]
