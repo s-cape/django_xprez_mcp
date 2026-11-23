@@ -108,13 +108,14 @@ only in `providers.admin`, which is imported lazily.
 | `providers/` | `Provider` (`base`), `ModelProvider` (`model`), model fields as arguments (`fields`), generic mode (`generic`). |
 | `providers/admin/` | `AdminProvider` (`provider`) and the admin request (`request`). |
 | `integrations/` | Optional libraries, imported lazily: `drf` (serializer fields, validation, errors). |
-| `contrib/` | Optional Django apps (`tokens`). |
+| `contrib/` | Optional Django apps (`tokens`, `oauth`). |
 
 Where planned work goes: rate limiting and query budgets next to the code they
 guard (`throttling.py` beside `views.py`, query cost in `providers/model.py`);
 audiences, composite tools and tool export in a `catalog/` package split out of
-`server.py`; the SSE transport turns `views.py` into a `transport/` package;
-OAuth turns `auth.py` into a package. A module that outgrows one concern
+`server.py`; the SSE transport turns `views.py` into a `transport/` package.
+OAuth is the optional `contrib.oauth` app: the core only asks backends for a
+`challenge` and adds a server's OAuth URLs while the app is installed. A module that outgrows one concern
 becomes a package of the same name, so its import path stays.
 
 ## API
@@ -853,10 +854,107 @@ server with `allow_anonymous=True` (a bad token is not served as anonymous).
   is installed; otherwise `ImproperlyConfigured`.
 - `xprez_mcp.auth.session`: `request.user` from the session.
 
-Without a user the endpoint answers `401` with `WWW-Authenticate: Bearer`,
-unless the server was created with `allow_anonymous=True`.
+Without a user the endpoint answers `401`, unless the server was created
+with `allow_anonymous=True`. The `WWW-Authenticate` header comes from the
+first backend with a `challenge(request, error) -> str | None` method
+(`error` is the `AuthenticationFailed`, or None when there was no
+credential); without one it is `Bearer`.
 
-OAuth (protected resource metadata, RFC 9728) is planned for later.
+### OAuth (`xprez_mcp.contrib.oauth`)
+
+Sign-in for clients that cannot send a pasted token (claude.ai connectors and
+other remote clients), following the MCP authorization spec (2025-11-25):
+OAuth 2.1 authorization code flow with PKCE (S256 only), rotating refresh
+tokens, resource indicators (RFC 8707), protected resource metadata (RFC
+9728), authorization server metadata (RFC 8414), client ID metadata
+documents and dynamic client registration (RFC 7591). No dependency beyond
+Django; codes and tokens are random and only their SHA-256 hash is stored.
+
+```python
+INSTALLED_APPS = [..., "xprez_mcp", "xprez_mcp.contrib.oauth"]
+XPREZ_MCP = {
+    "PERMISSION": "xprez_mcp.permissions.allow_authenticated",
+    # bearer_token only if personal tokens should keep working, and after it
+    "AUTHENTICATION": [
+        "xprez_mcp.contrib.oauth.auth.access_token",
+        "xprez_mcp.auth.bearer_token",
+    ],
+}
+
+# urls.py
+urlpatterns = [
+    path("", include("xprez_mcp.contrib.oauth.well_known")),
+    path("mcp/", mcp.urls),
+]
+```
+
+Then `migrate`. Users add `https://<site>/mcp/` as a connector, sign in with
+the site's login (`LOGIN_URL`) and allow the client.
+
+- **Each server is its own authorization server.** Its issuer is the endpoint
+  URL without the trailing slash (`https://site/mcp`), and the tokens it
+  issues are bound to that endpoint (`resource`): a token for another server
+  is rejected. While the app is installed, `server.urls` also serves
+  `.well-known/oauth-protected-resource`, `oauth/authorize/`, `oauth/token/`,
+  `oauth/register/` and `oauth/revoke/` under the server's path.
+- **Well-known URLs at the root.** Clients look for the authorization server
+  metadata at `/.well-known/oauth-authorization-server/mcp` (path insertion),
+  which only the root URLconf can serve: `well_known` maps the path back to
+  the server mounted there. It also serves
+  `/.well-known/oauth-protected-resource/mcp`, and the endpoint itself
+  without the trailing slash (`/mcp` like `/mcp/`): users paste the URL
+  either way, and a POST cannot be redirected to add it. Without the
+  include, `xprez_mcp_oauth.W001`.
+- **Challenge.** `access_token` answers `401` with
+  `Bearer resource_metadata="https://site/mcp/.well-known/oauth-protected-resource"`
+  (plus `error="invalid_token"` for a rejected token). It accepts only
+  `mcpoat_…` tokens and leaves others to the next backend; `bearer_token`
+  rejects tokens it does not know, so it must come after
+  (`xprez_mcp_oauth.W002`). It checks expiry, the audience and an active
+  user (loaded as the session would), and sets `request.mcp_oauth_grant`.
+- **Clients.** A `client_id` that is an https URL with a path is a client ID
+  metadata document: fetched once per cache period (its `Cache-Control`
+  max-age, bounded by `METADATA_CACHE`), at most `METADATA_MAX_BYTES`,
+  https only, no redirects, refused when the host resolves to a non-public
+  address, and connected to the checked addresses in resolver order (no
+  second lookup). `METADATA_TIMEOUT` bounds the whole fetch, not each read.
+  Fetches are limited per client IP and per document host
+  (`METADATA_FETCH_RATE`), so the endpoint cannot be used to send requests
+  elsewhere, and a URL that failed is not fetched again for a minute. While
+  throttled or failing, a stale copy is used for up to the longest cache
+  period, so known clients keep working when their host is briefly down. Its `client_id` must equal
+  the URL; only public clients. Other clients register at `oauth/register/`
+  (rate limited per IP with Django's cache) or are created with
+  `Client.objects.create_client(name, redirect_uris, public=True)`, which
+  wins over a document at the same URL. Redirect URIs are https, or http on
+  localhost (also when edited in the admin); they match exactly, except that
+  a loopback URI matches any port (RFC 8252). The token request repeats the
+  authorization request's `redirect_uri` exactly, or leaves it out when that
+  one did.
+- **Consent.** `xprez_mcp/oauth/authorize.html` (extending
+  `xprez_mcp/oauth/base.html`, which a project overrides for its layout)
+  shows the client name, who publishes it (the document's host) or that it
+  registered itself, the redirect host, the signed-in user and Allow / Deny,
+  with a warning for loopback redirects. An unknown client or an
+  unregistered redirect URI is shown as an error page, never redirected.
+  Strings are translatable; the project provides the translations.
+- **Tokens.** Codes live `CODE_LIFETIME` (120 s) and work once; a reused code
+  revokes what it issued. Access tokens live `ACCESS_TOKEN_LIFETIME` (1 h),
+  refresh tokens `REFRESH_TOKEN_LIFETIME` (30 days) and are rotated on every
+  use; a used refresh token coming back disconnects the grant, unless it
+  comes within `REFRESH_REUSE_INTERVAL` (10 s): that is a client retrying a
+  lost response, and it gets a new pair. A wrong PKCE verifier does not use
+  up the code. Issuing a code's or refresh token's pair happens in one
+  transaction with the grant locked. No scopes:
+  the server `permission` decides what a user may do.
+- **Connections.** A `Grant` is one user × client × endpoint; deleting it
+  disconnects the client. `connections.for_user(user)` and
+  `connections.disconnect(user, grant_id)` back an account page;
+  `ConnectionsView` is a ready one (login required). In the admin,
+  `GrantAdmin` shows non-superusers only their own connections.
+- `mcp_oauth_cleanup` (run daily) deletes expired codes and tokens,
+  connections that can no longer be refreshed, and clients nobody connected
+  within `UNUSED_CLIENT_DAYS`.
 
 ### Stored tokens (`xprez_mcp.contrib.tokens`)
 
@@ -913,6 +1011,7 @@ XPREZ_MCP = {
     "AUTODISCOVER_MODULE": "mcp",
     "AUTHENTICATION": ["xprez_mcp.auth.bearer_token"],
     "TOKEN_RESOLVER": None,        # "myapp.tokens.resolve"; None: contrib.tokens
+    "OAUTH": {},                   # contrib.oauth, see below
     "ALLOWED_ORIGINS": [],
     "EXCLUDE": [],
     "EXCLUDE_APPS": [],
@@ -936,6 +1035,26 @@ With several servers, the settings are defaults:
 - `AUTODISCOVER` and `AUTODISCOVER_MODULE` are global and fill the default
   `mcp` only.
 
+`OAUTH` (with `xprez_mcp.contrib.oauth`) overrides any of:
+
+```python
+"OAUTH": {
+    "BASE_URL": None,              # "https://example.com" behind a proxy that hides it
+    "ACCESS_TOKEN_LIFETIME": 3600,
+    "REFRESH_TOKEN_LIFETIME": 30 * 24 * 3600,
+    "REFRESH_REUSE_INTERVAL": 10,  # seconds a rotated refresh token is a retry
+    "CODE_LIFETIME": 120,
+    "CLIENT_ID_METADATA_DOCUMENTS": True,
+    "METADATA_TIMEOUT": 5,
+    "METADATA_MAX_BYTES": 5120,
+    "METADATA_CACHE": (300, 3600, 86400),  # min, default, max seconds
+    "METADATA_FETCH_RATE": (10, 60),       # fetches per IP and per host, window
+    "DYNAMIC_REGISTRATION": True,
+    "REGISTRATION_RATE": (20, 3600),       # registrations per IP and window
+    "UNUSED_CLIENT_DAYS": 7,
+}
+```
+
 The server name is also its URL namespace, so every server needs a unique
 name. A system check error (`xprez_mcp.E002`) reports
 servers that share a name, including two unnamed ones falling back to `NAME`.
@@ -946,6 +1065,8 @@ servers that share a name, including two unnamed ones falling back to `NAME`.
   source, and with `--user` which ones that user cannot see. It also lists
   write tools held back by `ALLOW_WRITES` and admin entries (`list_filter`,
   inlines) that `AdminProvider` could not map.
+- `mcp_oauth_cleanup` (with `xprez_mcp.contrib.oauth`) deletes expired OAuth
+  codes and tokens, dead connections and unused clients.
 
 ## Hardening *(planned)*
 

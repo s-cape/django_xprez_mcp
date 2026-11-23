@@ -1,0 +1,28 @@
+{% extends "xprez_mcp/oauth/base.html" %}
+{% load i18n %}
+
+{% block title %}{% blocktranslate %}Connect {{ client_name }}{% endblocktranslate %}{% endblock %}
+
+{% block content %}
+<h1>{% blocktranslate %}Connect {{ client_name }}?{% endblocktranslate %}</h1>
+
+<p>{% blocktranslate %}{{ client_name }} asks to use this site's MCP tools on your behalf, with your permissions.{% endblocktranslate %}</p>
+
+<p>{% blocktranslate %}Signed in as <span class="host">{{ user }}</span>.{% endblocktranslate %}</p>
+
+<p>{% blocktranslate %}After you allow, you will be sent to <span class="host">{{ redirect_host }}</span>.{% endblocktranslate %}
+{% if client_host %}{% blocktranslate %}The client is published by <span class="host">{{ client_host }}</span>.{% endblocktranslate %}
+{% else %}{% translate "The client registered itself; its name is not verified." %}{% endif %}</p>
+
+{% if loopback %}
+<p class="warning">{% translate "It returns to an app on this computer. Allow only if you have just started connecting it yourself." %}</p>
+{% endif %}
+
+<form method="post">
+  {% csrf_token %}
+  <div class="actions">
+    <button type="submit" name="allow">{% translate "Allow" %}</button>
+    <button type="submit" name="deny">{% translate "Deny" %}</button>
+  </div>
+</form>
+{% endblock %}

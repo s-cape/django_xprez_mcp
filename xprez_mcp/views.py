@@ -39,10 +39,10 @@ class MCPView(View):
 
         try:
             user = server.authenticate(request)
-        except AuthenticationFailed:
-            return unauthorized()
+        except AuthenticationFailed as error:
+            return unauthorized(request, server, error)
         if user is None and not server.allow_anonymous:
-            return unauthorized()
+            return unauthorized(request, server)
         if not server.has_access(server.get_context(request, user, version)):
             return JsonResponse({"error": "Forbidden"}, status=403)
 
@@ -101,7 +101,16 @@ def origin_allowed(request, allowed):
     return urlsplit(origin).netloc == request.get_host()
 
 
-def unauthorized():
+def unauthorized(request=None, server=None, error=None):
+    """``401`` with the challenge of the first backend that has one
+    (``backend.challenge(request, error) -> str | None``), else ``Bearer``."""
+    challenge = None
+    if server is not None:
+        for backend in server.get_authentication_backends():
+            get_challenge = getattr(backend, "challenge", None)
+            challenge = get_challenge(request, error) if get_challenge else None
+            if challenge:
+                break
     response = JsonResponse({"error": "Unauthorized"}, status=401)
-    response["WWW-Authenticate"] = "Bearer"
+    response["WWW-Authenticate"] = challenge or "Bearer"
     return response

@@ -8,6 +8,7 @@ DEFAULTS = {
     "AUTODISCOVER_MODULE": "mcp",
     "AUTHENTICATION": ["xprez_mcp.auth.bearer_token"],
     "TOKEN_RESOLVER": None,
+    "OAUTH": {},
     "ALLOWED_ORIGINS": [],
     "EXCLUDE": [],
     "EXCLUDE_APPS": [],

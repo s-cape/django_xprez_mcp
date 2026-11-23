@@ -11,6 +11,7 @@ INSTALLED_APPS = [
     "django.contrib.messages",
     "xprez_mcp",
     "xprez_mcp.contrib.tokens",
+    "xprez_mcp.contrib.oauth",
     "xprez_mcp.tests.testapp",
 ]
 ROOT_URLCONF = "xprez_mcp.tests.urls"

@@ -1,0 +1,21 @@
+{% extends "xprez_mcp/oauth/base.html" %}
+{% load i18n %}
+
+{% block title %}{% translate "Connected assistants" %}{% endblock %}
+
+{% block content %}
+<h1>{% translate "Connected assistants" %}</h1>
+{% for connection in connections %}
+<form method="post">
+  {% csrf_token %}
+  <p>
+    <span class="host">{{ connection.client }}</span><br>
+    {% blocktranslate with created=connection.created|date %}Connected {{ created }}{% endblocktranslate %}{% if connection.last_used %},
+    {% blocktranslate with used=connection.last_used|date %}last used {{ used }}{% endblocktranslate %}{% endif %}
+  </p>
+  <button type="submit" name="grant" value="{{ connection.pk }}">{% translate "Disconnect" %}</button>
+</form>
+{% empty %}
+<p>{% translate "No assistant is connected." %}</p>
+{% endfor %}
+{% endblock %}

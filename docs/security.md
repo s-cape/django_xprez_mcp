@@ -25,6 +25,24 @@ repeatedly and quickly. Go through this list before exposing a server.
 - [ ] A custom `TOKEN_RESOLVER` compares in constant time, stores only
   hashes and rejects inactive users, like `xprez_mcp.contrib.tokens`.
 
+## OAuth
+
+- [ ] `access_token` comes before `bearer_token` in `AUTHENTICATION`
+  (`manage.py check`: `xprez_mcp_oauth.W002`), and the well-known URLs are
+  included at the root (`xprez_mcp_oauth.W001`).
+- [ ] The public origin is right in the metadata (`SECURE_PROXY_SSL_HEADER`
+  or `OAUTH["BASE_URL"]` behind a proxy): clients check the issuer and the
+  resource URL.
+- [ ] The consent page keeps the client name, its publisher or "registered
+  itself", the redirect host and the signed-in user visible after styling.
+- [ ] `REMOTE_ADDR` is the client's address (registration and metadata
+  fetches are rate limited by it); behind a proxy, set it in middleware or
+  the WSGI server. With several workers, the default cache is shared
+  (Redis, Memcached, database), or each worker counts on its own.
+- [ ] `mcp_oauth_cleanup` runs daily.
+- [ ] `DYNAMIC_REGISTRATION` is off if only clients with a metadata document
+  (or pre-registered ones) should connect.
+
 ## Writes
 
 - [ ] Each `actions` list with `create`, `update` or `delete` is deliberate.

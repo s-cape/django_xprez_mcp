@@ -50,6 +50,7 @@ MAX_COMPLETIONS = 100
 # What the Claude and OpenAI APIs accept; stricter than the MCP spec.
 NAME_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 LONG_NAME = 40
+OAUTH_APP = "xprez_mcp.contrib.oauth"
 
 _servers = weakref.WeakSet()
 
@@ -391,7 +392,15 @@ class MCPServer:
     @property
     def urls(self):
         self.mounted = True
-        return [path("", self.get_view(), name="endpoint")], "xprez_mcp", self.name
+        return self.get_urls(), "xprez_mcp", self.name
+
+    def get_urls(self):
+        urls = [path("", self.get_view(), name="endpoint")]
+        if apps.is_installed(OAUTH_APP):
+            from .contrib.oauth.urls import server_urls
+
+            urls += server_urls(self)
+        return urls
 
     def get_view(self):
         if self._view is None:
