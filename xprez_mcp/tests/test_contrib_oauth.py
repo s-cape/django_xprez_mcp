@@ -6,10 +6,11 @@ import time
 from datetime import timedelta
 from io import StringIO
 from unittest import mock
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, urlencode, urlsplit
 
 from django.core.cache import cache
 from django.core.management import call_command
+from django.test import Client as DjangoClient
 from django.test import override_settings
 from django.utils import timezone
 
@@ -84,7 +85,6 @@ class OAuthTestCase(MCPTestCase):
         query = {key: value for key, value in query.items() if value is not None}
         if method == "get":
             return self.client.get(AUTHORIZE, query)
-        from urllib.parse import urlencode
 
         return self.client.post(f"{AUTHORIZE}?{urlencode(query)}", {"allow": ""})
 
@@ -285,6 +285,56 @@ class FlowTests(OAuthTestCase):
         grant = Grant.objects.get()
         self.assertEqual(grant.resource, RESOURCE)
         self.assertEqual(grant.user, self.user)
+
+    @override_settings(
+        MIDDLEWARE=[
+            "django.contrib.sessions.middleware.SessionMiddleware",
+            "django.middleware.csrf.CsrfViewMiddleware",
+            "django.contrib.auth.middleware.AuthenticationMiddleware",
+            "django.contrib.messages.middleware.MessageMiddleware",
+        ]
+    )
+    def test_allow_passes_csrf_check(self):
+        """A browser sends the page's Origin on the consent POST; with a
+        "no-referrer" policy it would send "Origin: null" and fail CSRF."""
+        client_id = self.public_client()["client_id"]
+        browser = DjangoClient(enforce_csrf_checks=True)
+        browser.force_login(self.user)
+        query = urlencode(
+            {
+                "response_type": "code",
+                "client_id": client_id,
+                "redirect_uri": REDIRECT,
+                "code_challenge": s256(secrets.token_urlsafe(32)),
+                "code_challenge_method": "S256",
+            }
+        )
+        url = f"{AUTHORIZE}?{query}"
+        page = browser.get(url)
+        self.assertEqual(page.status_code, 200)
+        self.assertNotContains(page, 'name="referrer"')
+        token = page.cookies["csrftoken"].value
+        data = {"allow": "", "csrfmiddlewaretoken": token}
+        response = browser.post(url, data, HTTP_ORIGIN="null")
+        self.assertEqual(response.status_code, 403)
+        response = browser.post(url, data, HTTP_ORIGIN="http://testserver")
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("code=", response["Location"])
+
+    def test_referrer_policy(self):
+        client_id = self.public_client()["client_id"]
+        responses = [self.authorize(client_id)]  # signed out: login redirect
+        self.client.force_login(self.user)
+        responses += [
+            self.authorize(client_id),  # consent page
+            self.authorize(client_id, method="post"),  # redirect with the code
+            self.authorize("mcpc_unknown"),  # error page
+        ]
+        self.assertEqual(
+            [response.status_code for response in responses], [302, 200, 302, 400]
+        )
+        for response in responses:
+            self.assertEqual(response["Referrer-Policy"], "same-origin")
 
     def test_only_hashes_stored(self):
         client_id, tokens = self.tokens()

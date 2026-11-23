@@ -158,6 +158,15 @@ class AuthorizeView(View):
     server = None
     template_name = "xprez_mcp/oauth/authorize.html"
     error_template_name = "xprez_mcp/oauth/error.html"
+    # the authorize URL (client_id, state, code_challenge) stays on this site,
+    # also from the redirect to the client; not "no-referrer", which makes
+    # browsers send "Origin: null" on the consent POST, failing the CSRF check
+    referrer_policy = "same-origin"
+
+    def dispatch(self, request, *args, **kwargs):
+        response = super().dispatch(request, *args, **kwargs)
+        response["Referrer-Policy"] = self.referrer_policy
+        return response
 
     def get(self, request):
         return self.handle(request, None)
