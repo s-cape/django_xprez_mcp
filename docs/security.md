@@ -30,9 +30,11 @@ repeatedly and quickly. Go through this list before exposing a server.
 - [ ] `access_token` comes before `bearer_token` in `AUTHENTICATION`
   (`manage.py check`: `xprez_mcp_oauth.W002`), and the well-known URLs are
   included at the root (`xprez_mcp_oauth.W001`).
-- [ ] The public origin is right in the metadata (`SECURE_PROXY_SSL_HEADER`
-  or `OAUTH["BASE_URL"]` behind a proxy): clients check the issuer and the
-  resource URL.
+- [ ] Behind a proxy, `SECURE_PROXY_SSL_HEADER` is set (or the public
+  origin is in `CSRF_TRUSTED_ORIGINS`): the consent form's POST fails
+  Django's CSRF check otherwise. The metadata must show the public origin
+  too (`SECURE_PROXY_SSL_HEADER` or `OAUTH["BASE_URL"]`): clients check the
+  issuer and the resource URL.
 - [ ] The consent page keeps the client name, its publisher or "registered
   itself", the redirect host and the signed-in user visible after styling.
 - [ ] `REMOTE_ADDR` is the client's address (registration and metadata

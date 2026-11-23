@@ -1,6 +1,7 @@
 from django.urls import include, path
 
 from xprez_mcp import mcp
+from xprez_mcp.contrib.oauth.views import ConnectionsView
 from xprez_mcp.tests.testapp.admin_servers import admin_generic_mcp, admin_mcp
 from xprez_mcp.tests.testapp.file_servers import (
     files_admin_mcp,
@@ -14,6 +15,7 @@ from xprez_mcp.tests.testapp.token_admin import token_admin_mcp
 
 urlpatterns = [
     path("", include("xprez_mcp.contrib.oauth.well_known")),
+    path("account/connections/", ConnectionsView.as_view()),
     path("mcp/", mcp.urls),
     path("oauth/mcp/", oauth_mcp.urls),
     path("staff/mcp/", staff_mcp.urls),

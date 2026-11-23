@@ -194,9 +194,12 @@ must be able to log in there. Then:
 - Schedule `./manage.py mcp_oauth_cleanup` daily (cron, a systemd timer,
   Celery beat): nothing runs it for you. Without it, expired rows and
   clients that registered but never connected pile up.
-- Behind a proxy, make sure the request knows the public `https://` origin
-  (`SECURE_PROXY_SSL_HEADER`, or `XPREZ_MCP["OAUTH"]["BASE_URL"]`):
-  clients compare it with the URL they were given.
+- Behind a proxy that terminates HTTPS, set `SECURE_PROXY_SSL_HEADER` so
+  the request knows it is `https://`. Clients compare the metadata with the
+  URL they were given, and Django's CSRF check compares the consent form's
+  `Origin` with it: without it, "Allow" fails with a CSRF 403.
+  `XPREZ_MCP["OAUTH"]["BASE_URL"]` fixes only the metadata; for CSRF,
+  `CSRF_TRUSTED_ORIGINS` is the alternative.
 
 ### Bearer tokens
 

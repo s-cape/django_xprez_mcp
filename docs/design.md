@@ -941,6 +941,11 @@ the site's login (`LOGIN_URL`) and allow the client.
   registered itself, the redirect host, the signed-in user and Allow / Deny,
   with a warning for loopback redirects. An unknown client or an
   unregistered redirect URI is shown as an error page, never redirected.
+  Every authorize response sends `Referrer-Policy: same-origin`, so the
+  authorize URL never leaks to another site while the consent POST keeps a
+  real `Origin` for Django's CSRF check (with `no-referrer`, browsers send
+  `Origin: null` and the check fails). An overriding template must not set
+  a referrer policy of its own.
   Strings are translatable; the project provides the translations.
 - **Tokens.** Codes live `CODE_LIFETIME` (120 s) and work once; a reused code
   revokes what it issued. Access tokens live `ACCESS_TOKEN_LIFETIME` (1 h),
