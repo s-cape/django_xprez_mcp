@@ -37,6 +37,13 @@ AUTHORIZE = "/oauth/mcp/oauth/authorize/"
 TOKEN = "/oauth/mcp/oauth/token/"
 REGISTER = "/oauth/mcp/oauth/register/"
 REVOKE = "/oauth/mcp/oauth/revoke/"
+CONNECTIONS = "/account/connections/"
+CSRF_MIDDLEWARE = [
+    "django.contrib.sessions.middleware.SessionMiddleware",
+    "django.middleware.csrf.CsrfViewMiddleware",
+    "django.contrib.auth.middleware.AuthenticationMiddleware",
+    "django.contrib.messages.middleware.MessageMiddleware",
+]
 REDIRECT = "https://client.example/callback"
 WHOAMI = {
     "jsonrpc": "2.0",
@@ -286,14 +293,7 @@ class FlowTests(OAuthTestCase):
         self.assertEqual(grant.resource, RESOURCE)
         self.assertEqual(grant.user, self.user)
 
-    @override_settings(
-        MIDDLEWARE=[
-            "django.contrib.sessions.middleware.SessionMiddleware",
-            "django.middleware.csrf.CsrfViewMiddleware",
-            "django.contrib.auth.middleware.AuthenticationMiddleware",
-            "django.contrib.messages.middleware.MessageMiddleware",
-        ]
-    )
+    @override_settings(MIDDLEWARE=CSRF_MIDDLEWARE)
     def test_allow_passes_csrf_check(self):
         """A browser sends the page's Origin on the consent POST; with a
         "no-referrer" policy it would send "Origin: null" and fail CSRF."""
@@ -527,6 +527,25 @@ class FlowTests(OAuthTestCase):
 
     def test_bearer_tokens_still_work(self):
         self.assertEqual(self.whoami("token-alice").status_code, 200)
+
+    @override_settings(MIDDLEWARE=CSRF_MIDDLEWARE)
+    def test_disconnect_page_passes_csrf_check(self):
+        """The connections page shares base.html with the consent page."""
+        client_id, tokens = self.tokens()
+        grant = Grant.objects.get()
+        browser = DjangoClient(enforce_csrf_checks=True)
+        browser.force_login(self.user)
+        page = browser.get(CONNECTIONS)
+        self.assertContains(page, "Test client")
+        self.assertNotContains(page, 'name="referrer"')
+        data = {
+            "grant": grant.pk,
+            "csrfmiddlewaretoken": page.cookies["csrftoken"].value,
+        }
+        response = browser.post(CONNECTIONS, data, HTTP_ORIGIN="http://testserver")
+        self.assertEqual(response.status_code, 302)
+        self.assertFalse(Grant.objects.exists())
+        self.assertEqual(self.whoami(tokens["access_token"]).status_code, 401)
 
     def test_disconnect(self):
         client_id, tokens = self.tokens()
