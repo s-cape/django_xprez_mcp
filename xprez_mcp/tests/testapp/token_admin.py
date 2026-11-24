@@ -1,10 +1,12 @@
-"""An admin site with users and MCP tokens."""
+"""An admin site with users, MCP tokens and OAuth connections."""
 
 from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin
 from django.contrib.auth.models import User
 
 from xprez_mcp import MCPServer
+from xprez_mcp.contrib.oauth.admin import GrantAdmin
+from xprez_mcp.contrib.oauth.models import Grant
 from xprez_mcp.contrib.tokens.admin import TokenAdmin
 from xprez_mcp.contrib.tokens.models import Token
 from xprez_mcp.permissions import allow_staff
@@ -13,6 +15,7 @@ site = admin.AdminSite(name="tokenadmin")
 
 site.register(User, UserAdmin)
 site.register(Token, TokenAdmin)
+site.register(Grant, GrantAdmin)
 
 token_admin_mcp = MCPServer(
     name="token-admin", permission=allow_staff, exposure="generic"

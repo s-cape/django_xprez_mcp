@@ -584,10 +584,11 @@ A permission is the same everywhere (server access, `@tool(permission=...)`,
 so a permission on such a server checks it first:
 `lambda ctx: ctx.user is not None and ctx.user.has_perm(...)`.
 
-Common callables ship in `xprez_mcp.permissions`: `allow_staff`,
-`allow_authenticated`. In code, no strings: a permission name would read
-like a dotted path. A string or a list raises `ImproperlyConfigured` where it
-is declared (when the decorator or the provider class is read). Only the
+Common callables ship in `xprez_mcp.permissions`: `allow_staff` (False for a
+user model without `is_staff`), `allow_authenticated`. In code, no strings: a
+permission name would read like a dotted path. A string or a list raises
+`ImproperlyConfigured` where it is declared (when the decorator or the
+provider class is read). Only the
 `PERMISSION` setting also takes a dotted path, as Django settings name
 callables (see Server access). On an item, no permission and `True` both
 mean open.
@@ -960,7 +961,8 @@ the site's login (`LOGIN_URL`) and allow the client.
   disconnects the client. `connections.for_user(user)` and
   `connections.disconnect(user, grant_id)` back an account page;
   `ConnectionsView` is a ready one (login required). In the admin,
-  `GrantAdmin` shows non-superusers only their own connections.
+  `GrantAdmin` shows others' connections only with `manage_others_grant`
+  (`has_manage_others_permission`, as in `TokenAdmin`).
 - `mcp_oauth_cleanup` (run daily) deletes expired codes and tokens,
   connections that can no longer be refreshed, and clients nobody connected
   within `UNUSED_CLIENT_DAYS`.
@@ -987,11 +989,16 @@ the admin.
   `permission`.
 - `TokenAdmin` (registered on `admin.site`) works under the model
   permissions (`add_token`, `view_token`, `change_token`, `delete_token`).
-  Non-superusers see only their own tokens and create tokens only for
-  themselves (`get_queryset`, `formfield_for_foreignkey`); superusers manage
-  everyone's. The key is shown once, in the admin message after "Save". The
-  message storage holds it for that one redirect (a signed cookie with the
-  default storage; `MESSAGE_STORAGE` session storage keeps it server-side).
+  Others' tokens (seeing them, creating tokens for other users) need
+  `manage_others_token`; superusers have it implicitly. Without it a user
+  sees only their own tokens and creates tokens only for themselves
+  (`get_queryset`, `formfield_for_foreignkey`). The check is
+  `has_manage_others_permission(request)`, `request.user.has_perm()`, so a
+  user model without `PermissionsMixin` decides in its own `has_perm`. The
+  key is shown once,
+  in the admin message after "Save". The message storage holds it for that
+  one redirect (a signed cookie with the default storage; `MESSAGE_STORAGE`
+  session storage keeps it server-side).
   Project rules go in the usual `ModelAdmin` methods of a subclass, for
   example refusing `has_add_permission` while an administrator acts as
   another user:

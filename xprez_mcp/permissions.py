@@ -20,7 +20,8 @@ def allow_authenticated(ctx):
 
 
 def allow_staff(ctx):
-    return allow_authenticated(ctx) and ctx.user.is_staff
+    # custom user models need not have is_staff
+    return allow_authenticated(ctx) and getattr(ctx.user, "is_staff", False)
 
 
 def validate_permission(permission, where="permission"):
