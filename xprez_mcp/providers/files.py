@@ -14,7 +14,7 @@ from django.utils.datastructures import MultiValueDict
 
 from ..core import files as file_arguments
 from ..core.files import DEFAULT_SOURCES, FileValue
-from ..errors import ToolError
+from ..errors import InvalidArguments, ToolError
 from .fields import file_field, upload_prefix
 
 logger = logging.getLogger("xprez_mcp")
@@ -24,20 +24,38 @@ class FileArgumentsMixin:
     """Resolve file arguments (``FileValue``) into files for model file fields.
 
     ``ModelProvider`` and ``AdminProvider`` inherit it; a plain ``Provider``
-    whose tools write file fields through its own forms can too.
+    whose tools write file fields through its own forms can too: ``file_value``,
+    ``resolve_file``, then ``form_files`` for the form, inside
+    ``removing_uploads_on_error``.
     """
 
     file_sources = DEFAULT_SOURCES  # ["data"]; "path" and "url" are opt-in
     max_file_size = 10 * 1024 * 1024  # bytes, uploads and fetches; None: no limit
     file_fetch_timeout = 10  # seconds
 
+    def file_value(self, value, field, path):
+        """A ``FileValue`` (or ``None`` for ``null``) from an untyped JSON value,
+        as a typed file argument of ``field`` converts it: the shapes in
+        ``file_sources``, ``null`` when the field allows blank. ``path`` names
+        the argument in errors, like ``fields.media``.
+        """
+        if not isinstance(field, models.FileField):
+            raise TypeError(f"file_value needs a FileField, not {field!r}.")
+        if not self.file_sources:
+            raise InvalidArguments(f"{path} is read-only.")
+        argument = file_arguments.file_argument(self.file_sources, field.blank)
+        return argument.coerce(value, path)
+
     def resolve_files(self, ctx, data, opts=None):
         """``(data, files)``: file arguments taken out of ``data`` as files a form
         accepts, ``False`` where the argument was ``null`` (clear).
 
-        ``opts`` is the model's ``_meta``; it defaults to ``self.opts``.
+        ``opts`` is the model's ``_meta``; it defaults to ``self.opts``, which
+        only a ``ModelProvider`` has.
         """
-        opts = opts or self.opts
+        opts = opts or getattr(self, "opts", None)
+        if opts is None:
+            raise TypeError("resolve_files needs opts outside a ModelProvider.")
         data, files = dict(data), {}
         for name, value in list(data.items()):
             field = file_field(opts, name)

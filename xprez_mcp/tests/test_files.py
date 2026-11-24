@@ -32,6 +32,7 @@ from .test_protocol import MCPTestCase
 from .testapp.file_servers import (
     DocumentAdmin,
     DocumentAdminProvider,
+    DocumentFormProvider,
     DocumentProvider,
 )
 from .testapp.models import Document, Page
@@ -463,6 +464,105 @@ class ModelProviderFileTests(FilesTestCase):
         )
         self.document.refresh_from_db()
         self.assertEqual(self.read(self.document.file), b"v2")
+
+
+class FormProviderFileTests(FilesTestCase):
+    """A plain Provider with FileArgumentsMixin, writing through a ModelForm."""
+
+    url = "/files-form/mcp/"
+
+    def update(self, **fields):
+        return self.call("update_document", {"id": self.document.pk, "fields": fields})
+
+    def updated(self, **fields):
+        result = self.update(**fields)
+        self.assertFalse(result["isError"], result)
+        self.document.refresh_from_db()
+        return self.document
+
+    def update_failed(self, **fields):
+        result = self.update(**fields)
+        self.assertTrue(result["isError"], result)
+        self.document.refresh_from_db()
+        self.assertEqual(self.document.file.name, "docs/report.txt")
+        return result["content"][0]["text"]
+
+    def test_data(self):
+        document = self.updated(
+            title="New", file={"data": b64(b"hello"), "name": "hello.txt"}
+        )
+        self.assertEqual(document.title, "New")
+        self.assertTrue(document.file.name.startswith("docs/hello"))
+        self.assertEqual(self.read(document.file), b"hello")
+
+    def test_path(self):
+        stored = default_storage.save("docs/other.txt", ContentFile(b"other"))
+        self.assertEqual(self.updated(file={"path": stored}).file.name, stored)
+
+    def test_null(self):
+        self.assertEqual(self.updated(attachment=None).attachment.name, "")
+        error = self.update_failed(file=None)
+        self.assertIn("fields.file is required and cannot be cleared", error)
+
+    def test_size_limit(self):
+        with mock.patch.object(DocumentFormProvider, "max_file_size", 3):
+            error = self.update_failed(file={"data": b64(b"four"), "name": "a"})
+        self.assertIn("larger than 3 bytes", error)
+
+    def test_path_outside_upload_to(self):
+        error = self.update_failed(file={"path": "attachments/a.txt"})
+        self.assertIn("file: path must be under 'docs/'", error)
+
+    def test_overridden_path_rule(self):
+        def allows_file_path(provider, ctx, field, path):
+            return path.startswith("docs/public/")
+
+        stored = default_storage.save("docs/other.txt", ContentFile(b"other"))
+        with mock.patch.object(
+            DocumentFormProvider, "allows_file_path", allows_file_path
+        ):
+            error = self.update_failed(file={"path": stored})
+        self.assertIn("path 'docs/other.txt' is not allowed", error)
+
+    def test_failed_save_removes_the_upload(self):
+        rejected = ToolError("Rejected after the save.")
+        with mock.patch.object(
+            DocumentFormProvider, "after_save", side_effect=rejected
+        ):
+            error = self.update_failed(file={"data": b64(b"x"), "name": "new.txt"})
+        self.assertIn("Rejected after the save.", error)
+        self.assertEqual(default_storage.listdir("docs")[1], ["report.txt"])
+
+    def test_same_errors_as_a_typed_argument(self):
+        provider = DocumentFormProvider(MCPServer(name="direct"))
+        field = Document._meta.get_field("file")
+        typed = file_argument(DocumentProvider.file_sources, False)
+        for value in ("hero.jpg", {"x": 1}, {"url": "https://example.com/a"}):
+            with self.subTest(value=value):
+                with self.assertRaises(InvalidArguments) as expected:
+                    coerce(typed, value, "fields.file")
+                with self.assertRaisesMessage(
+                    InvalidArguments, str(expected.exception)
+                ):
+                    provider.file_value(value, field, "fields.file")
+        with self.assertRaisesMessage(TypeError, "needs a FileField"):
+            provider.file_value({"path": "a"}, Document._meta.get_field("title"), "f")
+        with mock.patch.object(DocumentFormProvider, "file_sources", []):
+            with self.assertRaisesMessage(InvalidArguments, "fields.file is read-only"):
+                provider.file_value({"path": "a"}, field, "fields.file")
+        with self.assertRaisesMessage(TypeError, "needs opts"):
+            provider.resolve_files(None, {"file": None})
+        # and through the tool, as the typed argument of DocumentProvider
+        self.url = "/files/mcp/"
+        url = {"url": "https://example.com/a.txt"}
+        typed_error = self.failed(
+            "documents_update", {"id": self.document.pk, "file": url}
+        )
+        self.url = "/files-form/mcp/"
+        self.assertEqual(
+            self.update_failed(file=url),
+            typed_error.replace("file:", "fields.file:", 1),
+        )
 
 
 class _Handler(http.server.BaseHTTPRequestHandler):

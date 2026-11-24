@@ -9,6 +9,7 @@ Early development: phases 1 (core), 2 (models) and 3 (admin). See
 
 Guides: [getting started](docs/getting-started.md),
 [permissions](docs/permissions.md), [security checklist](docs/security.md).
+Changes per release: [changelog](CHANGELOG.md).
 
 ```python
 # settings.py

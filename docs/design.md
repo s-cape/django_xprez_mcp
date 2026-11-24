@@ -106,6 +106,7 @@ only in `providers.admin`, which is imported lazily.
 | `errors.py`, `conf.py`, `checks.py`, `apps.py` | Exceptions, settings, system checks, app config. |
 | `core/` | Specs and items, decorators, `CallContext`, schemas and argument conversion, results, file arguments. |
 | `providers/` | `Provider` (`base`), `ModelProvider` (`model`), model fields as arguments (`fields`), generic mode (`generic`). |
+| `providers/files.py` | `FileArgumentsMixin` (exported from `xprez_mcp.providers`) and the form helpers `form_files`, `closing_stored_files`, `check_cleared`: file arguments turned into files for any provider. |
 | `providers/admin/` | `AdminProvider` (`provider`) and the admin request (`request`). |
 | `integrations/` | Optional libraries, imported lazily: `drf` (serializer fields, validation, errors). |
 | `contrib/` | Optional Django apps (`tokens`, `oauth`). |
@@ -804,6 +805,55 @@ class DocumentProvider(ModelProvider):
   `removing_uploads_on_error` deletes the files it stored, so no orphan is
   left. An outer transaction (`ATOMIC_REQUESTS`) rolled back later is not
   covered.
+
+These methods and settings belong to `FileArgumentsMixin`
+(`xprez_mcp.providers`), which `ModelProvider` and `AdminProvider` inherit.
+A plain `Provider` whose tools write file fields through its own forms
+inherits it too. A free-form argument (`fields: dict[str, Any]`) skips schema
+conversion, so `file_value(value, field, path)` converts a file in it: the
+shapes in `file_sources`, `null` (`None`) when the field allows blank, and
+the same `InvalidArguments` as a typed argument, with `path` naming the
+argument. With an empty `file_sources` it refuses every value ("... is
+read-only"); `field` must be a `FileField` (`TypeError` otherwise). The form helpers live in `xprez_mcp.providers.files`:
+`form_files(files)` gives the form its `MultiValueDict`,
+`closing_stored_files(files)` closes stored files after validation, and
+`check_cleared(form, files, prefix="")` refuses a `null` the form ignored.
+
+```python
+from typing import Any
+
+from django.db import transaction
+from django.forms import modelform_factory
+
+from xprez_mcp import Provider, ToolError, tool
+from xprez_mcp.providers import FileArgumentsMixin
+from xprez_mcp.providers.files import check_cleared, closing_stored_files, form_files
+
+
+class GalleryProvider(FileArgumentsMixin, Provider):
+    file_sources = ["data", "path"]
+
+    @tool
+    def update_photo(self, ctx, id: int, fields: dict[str, Any]):
+        photo = Photo.objects.get(pk=id)
+        data, files = dict(fields), {}
+        if "image" in data:
+            field = Photo._meta.get_field("image")
+            value = self.file_value(data.pop("image"), field, "fields.image")
+            files["image"] = (
+                False if value is None else self.resolve_file(ctx, field, value)
+            )
+        # only the fields sent, so the others keep their values
+        form_class = modelform_factory(Photo, form=PhotoForm, fields=[*data, *files])
+        form = form_class(data, form_files(files), instance=photo)
+        with closing_stored_files(files):
+            valid = form.is_valid()
+        if not valid:
+            raise ToolError(form.errors.as_text())
+        check_cleared(form, files, "fields.")
+        with self.removing_uploads_on_error(files.values()), transaction.atomic():
+            form.save()
+```
 
 ## Results and errors
 
