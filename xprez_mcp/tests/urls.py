@@ -5,6 +5,7 @@ from xprez_mcp.contrib.oauth.views import ConnectionsView
 from xprez_mcp.tests.testapp.admin_servers import admin_generic_mcp, admin_mcp
 from xprez_mcp.tests.testapp.file_servers import (
     files_admin_mcp,
+    files_form_mcp,
     files_generic_mcp,
     files_mcp,
 )
@@ -29,6 +30,7 @@ urlpatterns = [
     path("files/mcp/", files_mcp.urls),
     path("files-generic/mcp/", files_generic_mcp.urls),
     path("files-admin/mcp/", files_admin_mcp.urls),
+    path("files-form/mcp/", files_form_mcp.urls),
 ]
 
 try:
