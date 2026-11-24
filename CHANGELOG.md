@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.8.0 (unreleased)
+## 0.8.0 (2026-11-24)
 
 - `FileArgumentsMixin` (`xprez_mcp.providers`) holds the file argument
   handling of `ModelProvider` (`resolve_files`, `resolve_file`,
