@@ -8,6 +8,7 @@ from io import StringIO
 from unittest import mock
 from urllib.parse import parse_qs, urlencode, urlsplit
 
+from django.contrib.auth.models import Permission, User
 from django.core.cache import cache
 from django.core.management import call_command
 from django.test import Client as DjangoClient
@@ -875,3 +876,39 @@ class MaintenanceTests(OAuthTestCase):
         self.assertIn("xprez_mcp_oauth.W002", ids)
         self.assertNotIn("xprez_mcp_oauth.W001", ids)
         server.mounted = False
+
+
+GRANTS = "/token-admin/xprez_mcp_oauth/grant/"
+
+
+def grant_perm(codename):
+    return Permission.objects.get(
+        content_type__app_label="xprez_mcp_oauth", codename=codename
+    )
+
+
+class GrantAdminTests(MCPTestCase):
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        cls.staff.user_permissions.add(grant_perm("view_grant"))
+        client, _ = Client.objects.create_client("Desk", ["https://desk.example/cb"])
+        Grant.objects.create(user=cls.staff, client=client, resource="mine")
+        Grant.objects.create(user=cls.user, client=client, resource="theirs")
+
+    def changelist(self, viewer):
+        self.client.force_login(viewer)
+        page = self.client.get(GRANTS)
+        self.assertContains(page, "mine")
+        return page
+
+    def test_own_connections_only(self):
+        self.assertNotContains(self.changelist(self.staff), "theirs")
+
+    def test_manage_others_permission(self):
+        self.staff.user_permissions.add(grant_perm("manage_others_grant"))
+        self.assertContains(self.changelist(self.staff), "theirs")
+
+    def test_superuser(self):
+        root = User.objects.create_superuser("root")
+        self.assertContains(self.changelist(root), "theirs")

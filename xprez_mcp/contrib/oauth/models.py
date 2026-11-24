@@ -123,6 +123,9 @@ class Grant(models.Model):
         ordering = ["-created"]
         verbose_name = "MCP connection"
         verbose_name_plural = "MCP connections"
+        permissions = [
+            ("manage_others_grant", "Can see and disconnect other users' connections")
+        ]
         constraints = [
             models.UniqueConstraint(
                 fields=["user", "client", "resource"],

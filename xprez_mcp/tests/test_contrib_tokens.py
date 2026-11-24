@@ -204,6 +204,13 @@ class TokenAdminTests(MCPTestCase):
             self.client.get(f"{ADMIN}xprez_mcp_tokens/token/"), "theirs"
         )
 
+    def test_manage_others_permission(self):
+        Token.objects.create_token(self.user, "theirs")
+        self.staff.user_permissions.add(perms("manage_others_token").get())
+        page = self.add(self.staff, {"user": self.user.pk, "name": "for alice"})
+        self.assertContains(page, "theirs")
+        self.assertEqual(Token.objects.get(name="for alice").user, self.user)
+
     def test_not_exposed_through_mcp(self):
         tools = self.result("tools/list", token="token-bob", url="/token-admin/mcp/")
         tools = {tool["name"]: tool for tool in tools["tools"]}

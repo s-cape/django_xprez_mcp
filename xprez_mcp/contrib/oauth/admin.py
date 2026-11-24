@@ -57,7 +57,7 @@ class ClientAdmin(admin.ModelAdmin):
 @admin.register(Grant)
 class GrantAdmin(admin.ModelAdmin):
     """Connections; deleting one disconnects the client. Others' connections
-    are for superusers only."""
+    need ``manage_others_grant``."""
 
     mcp_exposed = False
     list_display = ["client", "user", "resource", "created", "last_used"]
@@ -65,9 +65,13 @@ class GrantAdmin(admin.ModelAdmin):
     raw_id_fields = ["user", "client"]
     readonly_fields = ["user", "client", "resource", "created", "last_used"]
 
+    def has_manage_others_permission(self, request):
+        """Whether the admin user sees and disconnects others' connections."""
+        return request.user.has_perm("xprez_mcp_oauth.manage_others_grant")
+
     def get_queryset(self, request):
         queryset = super().get_queryset(request).select_related("client", "user")
-        if not request.user.is_superuser:
+        if not self.has_manage_others_permission(request):
             queryset = queryset.filter(user=request.user)
         return queryset
 

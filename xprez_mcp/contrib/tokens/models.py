@@ -40,6 +40,7 @@ class Token(models.Model):
         ordering = ["-created"]
         verbose_name = "MCP token"
         verbose_name_plural = "MCP tokens"
+        permissions = [("manage_others_token", "Can manage other users' tokens")]
 
     def __str__(self):
         return self.name
