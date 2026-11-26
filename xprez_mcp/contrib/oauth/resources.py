@@ -4,14 +4,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 from django.urls import reverse
 
-from . import conf
-
-
-def base_url(request):
-    base = conf.get("BASE_URL")
-    if base:
-        return base.rstrip("/")
-    return f"{request.scheme}://{request.get_host()}"
+from xprez_mcp.views import base_url
 
 
 def url(request, name, namespace=None):

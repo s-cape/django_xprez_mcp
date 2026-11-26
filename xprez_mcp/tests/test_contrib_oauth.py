@@ -198,9 +198,7 @@ class MetadataTests(OAuthTestCase):
         )
 
     def test_base_url(self):
-        with override_settings(
-            XPREZ_MCP={"OAUTH": {"BASE_URL": "https://mcp.example/"}}
-        ):
+        with override_settings(XPREZ_MCP={"BASE_URL": "https://mcp.example/"}):
             response = self.client.get(
                 "/oauth/mcp/.well-known/oauth-protected-resource"
             )
@@ -869,7 +867,8 @@ class MaintenanceTests(OAuthTestCase):
     def test_cleanup_only(self):
         with self.assertRaisesMessage(
             CommandError,
-            "No cleanup for xprez_mcp_tokens, nope; apps with one: xprez_mcp_oauth.",
+            "No cleanup for xprez_mcp_tokens, nope; apps with one: xprez_mcp_oauth, "
+            "xprez_mcp_uploads.",
         ):
             call_command("mcp_cleanup", "--only", "xprez_mcp_tokens", "nope")
 

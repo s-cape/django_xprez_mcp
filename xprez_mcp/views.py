@@ -4,12 +4,13 @@ import json
 import logging
 from urllib.parse import urlsplit
 
-from django.core.exceptions import RequestDataTooBig
+from django.core.exceptions import ImproperlyConfigured, RequestDataTooBig
 from django.http import HttpResponse, JsonResponse
 from django.utils.decorators import method_decorator
 from django.views import View
 from django.views.decorators.csrf import csrf_exempt
 
+from . import conf
 from .errors import (
     INTERNAL_ERROR,
     INVALID_REQUEST,
@@ -82,6 +83,19 @@ class MCPView(View):
             logger.exception("MCP method %s failed", method)
             return rpc_error(message_id, INTERNAL_ERROR, "Internal error.")
         return rpc_response(message_id, result=result)
+
+
+def base_url(request):
+    """The public origin, like ``https://example.com``: ``XPREZ_MCP["BASE_URL"]``,
+    else the request's."""
+    base = conf.get("BASE_URL")
+    if base:
+        return base.rstrip("/")
+    if request is None:
+        raise ImproperlyConfigured(
+            'Outside a request, absolute URLs need XPREZ_MCP["BASE_URL"].'
+        )
+    return f"{request.scheme}://{request.get_host()}"
 
 
 def rpc_response(message_id, result=None, error=None):
