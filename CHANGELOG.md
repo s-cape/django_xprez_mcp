@@ -1,5 +1,33 @@
 # Changelog
 
+## Unreleased
+
+Fixes from a review of the library.
+
+Upgrading: a tool raising Django's `ValidationError` with a dict now returns
+`{"error", "fields"}` instead of the bare messages, and a tool whose type
+hints cannot become a schema now fails `manage.py check`
+(`xprez_mcp.E006`); before, it broke `tools/list` at runtime.
+
+- Write tools of `register_admin` providers no longer disappear when two
+  threads build the catalog at once (the first requests of a threaded
+  worker).
+- The system check `xprez_mcp.E006` reports a tool whose input schema cannot
+  be built.
+- `ProtectedError` / `RestrictedError` and other `IntegrityError`s are
+  readable tool errors instead of "Internal error."; the database's details
+  are logged, not sent.
+- A `ValidationError` with a dict keeps its field names.
+- `AdminProvider`: `update` also takes the fields of the admin's change form
+  (with `UserAdmin` it took the username only). `mcp_inspect` notes a
+  `create` whose add form requires fields that are not model fields; the new
+  hook `write_field_names(partial)` picks the fields per action.
+- `NaN` and `Infinity` in a request are a parse error, and in a result
+  become `null`: responses are always valid JSON.
+- A non-string tool or prompt name and malformed `completion/complete`
+  params are invalid params (`-32602`), not internal errors.
+- A `datetime` argument ending in `Z` works on Python 3.9 and 3.10.
+
 ## 0.9.0 (2026-11-26)
 
 Helpers for providers of hand-written tools, all opt-in.

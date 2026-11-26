@@ -421,6 +421,28 @@ class HiddenFieldsTests(TestCase):
         server = MCPServer(name="users")
         return server, type("P", (AdminProvider,), attrs)(server, model=User)
 
+    def test_update_takes_the_change_form_fields(self):
+        # UserAdmin's add form has the username only; its change form the rest
+        server, provider = self.provider(actions=["list", "get", "create", "update"])
+        create = [name for name, _, _ in provider.write_parameters(partial=False)]
+        update = [name for name, _, _ in provider.write_parameters(partial=True)]
+        self.assertEqual(create, ["username"])
+        self.assertEqual(update[0], "username")
+        self.assertTrue({"email", "is_staff", "groups"} <= set(update))
+        self.assertNotIn("password", update)
+        root = User.objects.create_superuser("change-root")
+        ctx = CallContext(server=server, user=root)
+        data = provider.run(ctx, "update", id=root.pk, email="root@example.com")
+        self.assertEqual(data["email"], "root@example.com")
+
+    def test_add_form_fields_create_cannot_send(self):
+        _, provider = self.provider(actions=["list", "create"])
+        notes = [note for note in provider.unsupported if note.startswith("create")]
+        self.assertEqual(len(notes), 1)
+        self.assertIn("password1", notes[0])
+        _, provider = self.provider()  # no create: nothing to report
+        self.assertFalse([n for n in provider.unsupported if n.startswith("create")])
+
     def test_masked_password_left_out(self):
         server, provider = self.provider()
         root = User.objects.create_superuser("hidden-root", password="secret")

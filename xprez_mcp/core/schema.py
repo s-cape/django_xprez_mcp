@@ -10,6 +10,7 @@ import uuid
 from typing import Annotated, Any, Literal, Union, get_args, get_origin
 
 from django.core.exceptions import ImproperlyConfigured
+from django.utils.dateparse import parse_datetime
 
 from ..errors import InvalidArguments
 from .arguments import OutOfRange, check_limits, limits, limits_schema
@@ -305,7 +306,14 @@ def _from_string(annotation, value, path):
         if annotation is decimal.Decimal:
             return decimal.Decimal(value)
         if annotation is datetime.datetime:
-            return datetime.datetime.fromisoformat(value)
+            try:
+                return datetime.datetime.fromisoformat(value)
+            except ValueError:
+                # Python before 3.11 does not read "Z" and some other ISO forms
+                parsed = parse_datetime(value)
+                if parsed is None:
+                    raise
+                return parsed
         if annotation is datetime.date:
             return datetime.date.fromisoformat(value)
         if isinstance(annotation, type) and issubclass(annotation, enum.Enum):

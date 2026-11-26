@@ -487,7 +487,12 @@ therefore never adds a write tool on its own.
   (`get_fields` / `get_readonly_fields`, or the static `fields` /
   `fieldsets` when an override needs a user), limited to editable model
   fields. Per call, sending a field that `get_fieldsets(request, obj)` or
-  `get_readonly_fields(request, obj)` excludes is an error. Validation uses `get_form(request, obj, fields=sent)`
+  `get_readonly_fields(request, obj)` excludes is an error. `update` takes
+  the fields of the add form and of the change form (read with an unsaved
+  record), as admins like `UserAdmin` show different ones; a field the add
+  form requires that is not a model field (its passwords) cannot be sent, so
+  that `create` always fails and `mcp_inspect` notes it. Override
+  `write_field_names(partial)` for other lists. Validation uses `get_form(request, obj, fields=sent)`
   with the [file arguments](#file-arguments) as its `files`. The request
   stays the call's shared one, so `request.FILES` is empty here: admin code
   reads uploads from the form (`form.cleaned_data`), not the request. Inline
@@ -791,7 +796,10 @@ Parameters without a default are required; unknown arguments are rejected.
 `Annotated[X, Lookup(...)]` takes a reference and passes an object (see
 [Lookup arguments](#lookup-arguments)).
 Arguments are validated and converted before the call (an ISO string becomes
-a `date`, a value becomes an `Enum` member).
+a `date`, a value becomes an `Enum` member); a `datetime` may end in `Z` on
+every supported Python. A hint the schema cannot express is reported by the
+system check `xprez_mcp.E006`: it would fail `tools/list` for the whole
+server.
 
 `@tool(input_schema={...})` replaces the derived schema with a hand-written
 one (validated with a small JSON Schema subset, passed through unconverted).
@@ -1103,8 +1111,14 @@ slow uploads do not hold Django workers.
 - `ToolError` and argument errors become a result with `isError: true`, so the
   model can read the message and retry.
 - Django's `PermissionDenied`, `ObjectDoesNotExist` / `Http404` and
-  `ValidationError` map to readable errors. Anything else is logged and
-  reported as an internal error.
+  `ValidationError` map to readable errors; a `ValidationError` with a dict
+  keeps its field names (`{"error", "fields"}`, like an invalid form). A
+  `ProtectedError` / `RestrictedError` says how many related objects block
+  the delete, and any other `IntegrityError` that the change conflicts with
+  existing data (its details are logged, not sent). Anything else is logged
+  and reported as an internal error.
+- `NaN` and infinite floats are not JSON: in a request they are a parse
+  error, in a result they become `null`.
 - `@mcp.error_handler(VersionConflict)` maps project exceptions to a result,
   for example a version conflict returning the current record.
 - Unknown tools, prompts and resources are JSON-RPC errors.

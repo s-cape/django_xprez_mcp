@@ -7,7 +7,7 @@ from django.core.exceptions import ImproperlyConfigured
 from django.test import SimpleTestCase, override_settings
 
 from xprez_mcp import InvalidName, MCPServer, ModelProvider, Provider, tool
-from xprez_mcp.checks import check_names
+from xprez_mcp.checks import check_names, check_schemas
 from xprez_mcp.server import MCPServer as ServerClass
 from xprez_mcp.permissions import allow_authenticated
 
@@ -186,3 +186,45 @@ class ExposureTests(SimpleTestCase):
         server = MCPServer(permission=True)
         server.register(Writer)
         self.assertIn("change", server.catalog["tool"])
+
+
+class SchemaCheckTests(SimpleTestCase):
+    def test_unsupported_annotation(self):
+        server = MCPServer(name="schemas", permission=True)
+
+        @server.tool
+        def fine(ctx, name: str):
+            return name
+
+        self.assertEqual(check_schemas(server), [])
+
+        @server.tool
+        def broken(ctx, value: object):
+            return "x"
+
+        errors = check_schemas(server)
+        self.assertEqual([error.id for error in errors], ["xprez_mcp.E006"])
+        self.assertIn("broken", errors[0].msg)
+
+    def test_raw_schema_needs_no_annotations(self):
+        server = MCPServer(name="schemas", permission=True)
+        server.tool(lambda ctx, value: value, name="raw", input_schema={})
+        self.assertEqual(check_schemas(server), [])
+
+
+class TrustedWritesTests(SimpleTestCase):
+    """``register_admin`` providers keep their writes whichever catalog build
+    ends up cached."""
+
+    def test_catalogs_built_at_once(self):
+        from .testapp.admin import site
+
+        server = MCPServer(name="trusted", permission=True)
+        server.register_admin(site, actions=["list", "create"])
+        with mock.patch.object(ServerClass, "is_third_party", lambda *args: True):
+            first = server.build_catalog()
+            server.build_catalog()  # as a second thread would, at the same time
+            self.assertIn("clients_create", first["tool"])
+            provider = first["tool"]["clients_create"].provider
+            self.assertTrue(provider.writes_allowed())
+            self.assertEqual(server.withheld_writes, [])

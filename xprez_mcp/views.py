@@ -50,7 +50,7 @@ class MCPView(View):
             return JsonResponse({"error": "Forbidden"}, status=403)
 
         try:
-            message = json.loads(request.body)
+            message = json.loads(request.body, parse_constant=reject_constant)
         except RequestDataTooBig:
             return rpc_error(None, INVALID_REQUEST, "Request too large.")
         except (ValueError, RecursionError):  # RecursionError: deeply nested
@@ -72,8 +72,12 @@ class MCPView(View):
         if not isinstance(method, str) or not isinstance(params, dict):
             return rpc_error(message_id, INVALID_REQUEST, "Invalid request.")
 
+        meta = params.get("_meta")
         ctx = server.get_context(
-            request, user, protocol_version=version, meta=params.get("_meta") or {}
+            request,
+            user,
+            protocol_version=version,
+            meta=meta if isinstance(meta, dict) else {},
         )
         try:
             result = server.dispatch(ctx, method, params)
@@ -83,6 +87,11 @@ class MCPView(View):
             logger.exception("MCP method %s failed", method)
             return rpc_error(message_id, INTERNAL_ERROR, "Internal error.")
         return rpc_response(message_id, result=result)
+
+
+def reject_constant(name):
+    """``NaN`` and ``Infinity`` are not JSON, though ``json.loads`` reads them."""
+    raise ValueError(f"{name} is not valid JSON.")
 
 
 def base_url(request):

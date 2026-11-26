@@ -114,8 +114,14 @@ class AdminProvider(ModelProvider):
         if self.filters_from_admin:
             self.filters, unsupported = self.admin_filters(model_admin.list_filter)
             self.unsupported += unsupported
+        # an admin may show other fields when changing than when adding
+        # (UserAdmin does), so update gets its own list
+        self.update_fields = None
         if self.write_fields is None and self.serializer is None:
             self.write_fields = self.admin_write_fields()
+            self.update_fields = self.admin_update_fields(self.write_fields)
+            if "create" in self.actions:
+                self.unsupported += self.unsupported_add_fields(self.write_fields)
         hidden = self.get_hidden_fields(model_admin)
         # matching on a hidden field would reveal it through counts
         self.search_fields = tuple(
@@ -132,6 +138,16 @@ class AdminProvider(ModelProvider):
             self.write_fields = [
                 name for name in self.write_fields if name not in hidden
             ]
+        if self.update_fields is not None:
+            self.update_fields = [
+                name for name in self.update_fields if name not in hidden
+            ]
+
+    def write_field_names(self, partial):
+        update_fields = getattr(self, "update_fields", None)
+        if partial and update_fields is not None:
+            return update_fields
+        return super().write_field_names(partial)
 
     def get_hidden_fields(self, model_admin):
         """``hidden_fields`` and the fields the admin's form shows masked, on the
@@ -193,8 +209,9 @@ class AdminProvider(ModelProvider):
             readonly = list(model_admin.readonly_fields)
         return fields, readonly
 
-    def admin_write_fields(self):
-        fields, readonly = self.static_fields(self.model_admin)
+    def admin_write_fields(self, obj=None):
+        """The model fields of the add form, or of ``obj``'s change form."""
+        fields, readonly = self.static_fields(self.model_admin, obj)
         if not fields:
             fields = [field.name for field in self.opts.get_fields()]
         return [
@@ -202,6 +219,32 @@ class AdminProvider(ModelProvider):
             for name in fields
             if name not in readonly and is_writable(self.opts, name)
         ]
+
+    def admin_update_fields(self, add_fields):
+        """The fields ``update`` takes: those of the add form and of the change
+        form. The schema has no user or record, so it is the wider list;
+        ``check_settable`` refuses per call what the admin does not let this
+        user edit on this record."""
+        change_fields = self.admin_write_fields(self.model())
+        return [*add_fields, *(n for n in change_fields if n not in add_fields)]
+
+    def unsupported_add_fields(self, write_fields):
+        """A note for each field the add form requires that ``create`` cannot
+        send (``UserAdmin``'s passwords): such a create always fails."""
+        try:
+            form = self.model_admin.get_form(self.static_request(), None, change=False)
+            required = [
+                name
+                for name, field in form.base_fields.items()
+                if field.required
+                and name not in write_fields
+                and not is_writable(self.opts, name)
+            ]
+        except Exception:  # an override that needs a real user
+            return []
+        if not required:
+            return []
+        return [f"create: the add form requires {', '.join(required)}"]
 
     def admin_filters(self, list_filter):
         """``(filters, unsupported entries)`` of a ``list_filter``."""

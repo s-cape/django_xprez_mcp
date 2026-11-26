@@ -516,12 +516,16 @@ class ModelProvider(FileArgumentsMixin, Provider):
     def _is_writable(self, name):
         return is_writable(self.opts, name)
 
+    def write_field_names(self, partial):
+        """The fields ``create`` (or, when ``partial``, ``update``) takes."""
+        return self.get_write_fields()
+
     def write_parameters(self, partial):
         serializer_fields = {}
         if self.serializer is not None:
             serializer_fields = drf.serializer_fields(self.serializer)
         params = []
-        for name in self.get_write_fields():
+        for name in self.write_field_names(partial):
             required = nullable = None
             as_file = True
             if name in serializer_fields:

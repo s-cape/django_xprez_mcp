@@ -16,7 +16,8 @@ from django.core.exceptions import (
     ValidationError,
 )
 from django.core.signals import setting_changed
-from django.db import DEFAULT_DB_ALIAS, connections, transaction
+from django.db import DEFAULT_DB_ALIAS, IntegrityError, connections, transaction
+from django.db.models import ProtectedError, RestrictedError
 from django.dispatch import receiver
 from django.http import Http404
 from django.urls import path
@@ -104,7 +105,6 @@ class MCPServer:
         self._atomic_writes = atomic_writes
         self._registry = {}
         self._admin_sites = []
-        self._trusted_providers = set()
         self._withheld_writes = []
         self._functions = []
         self._removed = set()
@@ -307,7 +307,6 @@ class MCPServer:
     def build_catalog(self):
         from .providers.model import ModelProvider
 
-        self._trusted_providers = set()
         providers = self.get_providers()
         items = [item for provider in providers for item in provider.get_items()]
         items += [Item(spec) for spec in self._functions]
@@ -324,7 +323,7 @@ class MCPServer:
         exclude = [*conf.get("EXCLUDE"), *self.exclude]
         exclude_apps = {*conf.get("EXCLUDE_APPS"), *self.exclude_apps}
         catalog = {kind: {} for kind in KINDS}
-        self._withheld_writes = []
+        withheld = []
         invalid = []
         for item in items:
             identifier = item.identifier
@@ -340,7 +339,7 @@ class MCPServer:
                 else:
                     allowed = self.module_writes_allowed(item.module)
                 if not allowed:
-                    self._withheld_writes.append(item)
+                    withheld.append(item)
                     continue
             if item.kind != "resource" and not NAME_PATTERN.match(identifier):
                 invalid.append(f"{identifier!r} ({item.source})")
@@ -356,6 +355,8 @@ class MCPServer:
                 f"Invalid MCP names on {self!r}: {', '.join(invalid)}. Tool and "
                 f"prompt names must match {NAME_PATTERN.pattern}."
             )
+        # one assignment, so a concurrent build leaves a whole list
+        self._withheld_writes = withheld
         return catalog
 
     @property
@@ -383,7 +384,7 @@ class MCPServer:
 
     def provider_writes_allowed(self, provider):
         """Whether write tools of ``provider`` are exposed."""
-        if provider in self._trusted_providers:
+        if getattr(provider, "_mcp_trusted_writes", False):
             return True
         else:
             return self.module_writes_allowed(type(provider).__module__)
@@ -391,12 +392,16 @@ class MCPServer:
     def trust_writes(self, provider):
         """Providers the server built itself (``register_admin``) count as the
         project's: their writes are opt-in through ``actions`` already."""
-        self._trusted_providers.add(provider)
+        # kept on the provider: each catalog build makes new providers, and
+        # two builds at once must not untrust each other's
+        provider._mcp_trusted_writes = True
 
     def get_items(self, kind, ctx):
         return [item for item in self.catalog[kind].values() if item.is_allowed(ctx)]
 
     def get_item(self, kind, identifier, ctx):
+        if not isinstance(identifier, str):
+            return None
         item = self.catalog[kind].get(identifier)
         if item is not None and item.is_allowed(ctx):
             return item
@@ -613,10 +618,14 @@ class MCPServer:
         if isinstance(error, (ObjectDoesNotExist, Http404)):
             return results.tool_result(str(error) or "Not found.", is_error=True)
         if isinstance(error, ValidationError):
-            return results.tool_result(" ".join(error.messages), is_error=True)
+            return results.tool_result(_validation_value(error), is_error=True)
         value = drf.error_value(error)
         if value is not None:
             return results.tool_result(value, is_error=True)
+        if isinstance(error, IntegrityError):
+            # the details name tables and columns: logged, not sent
+            logger.warning("Tool %s failed: %r", item.name, error)
+            return results.tool_result(_integrity_message(error), is_error=True)
         logger.exception("Tool %s failed", item.name)
         return results.tool_result("Internal error.", is_error=True)
 
@@ -723,6 +732,14 @@ class MCPServer:
     def complete(self, ctx, params):
         ref = params.get("ref") or {}
         argument = params.get("argument") or {}
+        context = params.get("context") or {}
+        value = argument.get("value", "") if isinstance(argument, dict) else None
+        if not (
+            isinstance(ref, dict)
+            and isinstance(context, dict)
+            and isinstance(value, str)
+        ):
+            raise RpcError(INVALID_PARAMS, "Invalid completion request.")
         if ref.get("type") == "ref/prompt":
             item = self.get_item("prompt", ref.get("name"), ctx)
         elif ref.get("type") == "ref/resource":
@@ -736,15 +753,8 @@ class MCPServer:
         if func is not None:
             options = {}
             if "arguments" in inspect.signature(func).parameters:
-                options["arguments"] = (params.get("context") or {}).get(
-                    "arguments", {}
-                )
-            values = [
-                str(value)
-                for value in item.invoke(
-                    func, ctx, argument.get("value", ""), **options
-                )
-            ]
+                options["arguments"] = context.get("arguments", {})
+            values = [str(found) for found in item.invoke(func, ctx, value, **options)]
         return {
             "completion": {
                 "values": values[:MAX_COMPLETIONS],
@@ -789,6 +799,27 @@ def _decode_list_cursor(cursor):
         return base64.b64decode(padded, altchars=b"-_", validate=True).decode()
     except (ValueError, UnicodeDecodeError):
         raise RpcError(INVALID_PARAMS, "Invalid cursor.") from None
+
+
+def _validation_value(error):
+    """A ``ValidationError`` as a tool result: with field names when it has
+    them, like an invalid form."""
+    if not hasattr(error, "error_dict"):
+        return " ".join(error.messages)
+    fields = error.message_dict
+    summary = "; ".join(
+        f"{field}: {' '.join(messages)}" for field, messages in fields.items()
+    )
+    return {"error": f"Invalid data. {summary}", "fields": fields}
+
+
+def _integrity_message(error):
+    if isinstance(error, (ProtectedError, RestrictedError)):
+        related = getattr(error, "protected_objects", None)
+        if related is None:
+            related = getattr(error, "restricted_objects", ())
+        return f"This cannot be deleted: {len(related)} related objects depend on it."
+    return "The change conflicts with existing data (a database constraint)."
 
 
 def _user_pk(ctx):

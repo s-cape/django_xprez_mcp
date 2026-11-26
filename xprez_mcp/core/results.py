@@ -5,7 +5,15 @@ from django.core.serializers.json import DjangoJSONEncoder
 
 
 def dumps(value):
-    return json.dumps(value, cls=DjangoJSONEncoder, ensure_ascii=False)
+    """JSON text; ``NaN`` and infinite floats, which JSON lacks, become null."""
+    try:
+        return json.dumps(
+            value, cls=DjangoJSONEncoder, ensure_ascii=False, allow_nan=False
+        )
+    except ValueError:
+        text = json.dumps(value, cls=DjangoJSONEncoder, ensure_ascii=False)
+        value = json.loads(text, parse_constant=lambda name: None)
+        return json.dumps(value, ensure_ascii=False)
 
 
 def jsonable(value):
