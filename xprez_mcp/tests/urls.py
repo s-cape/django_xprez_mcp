@@ -13,6 +13,7 @@ from xprez_mcp.tests.testapp.file_servers import (
 from xprez_mcp.tests.testapp.model_servers import generic_mcp, model_mcp
 from xprez_mcp.tests.testapp.servers import oauth_mcp, open_mcp, staff_mcp
 from xprez_mcp.tests.testapp.token_admin import site as token_site
+from xprez_mcp.tests.testapp.upload_servers import uploads_mcp
 from xprez_mcp.tests.testapp.token_admin import token_admin_mcp
 
 urlpatterns = [
@@ -34,6 +35,7 @@ urlpatterns = [
     path("files-form/mcp/", files_form_mcp.urls),
     path("domain/mcp/", domain_mcp.urls),
     path("plain/mcp/", plain_mcp.urls),
+    path("uploads/mcp/", uploads_mcp.urls),
 ]
 
 try:

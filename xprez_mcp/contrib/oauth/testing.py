@@ -2,6 +2,7 @@
 
 from django.urls import reverse
 
+from xprez_mcp import conf as xprez_conf
 from xprez_mcp.server import mcp
 
 from . import conf
@@ -17,7 +18,7 @@ def access_token(user, url=None, client_name="Test client"):
     if url is None:
         url = reverse(f"{mcp.name}:endpoint")
     if url.startswith("/"):
-        url = (conf.get("BASE_URL") or "http://testserver").rstrip("/") + url
+        url = (xprez_conf.get("BASE_URL") or "http://testserver").rstrip("/") + url
     client = Client.objects.filter(kind=Client.MANUAL, name=client_name).first()
     if client is None:
         client, _ = Client.objects.create_client(client_name, [TEST_REDIRECT_URI])

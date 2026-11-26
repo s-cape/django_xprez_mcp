@@ -110,7 +110,7 @@ only in `providers.admin`, which is imported lazily.
 | `providers/files.py` | `FileArgumentsMixin` (exported from `xprez_mcp.providers`) and the form helpers `form_files`, `closing_stored_files`, `check_cleared`: file arguments turned into files for any provider. |
 | `providers/admin/` | `AdminProvider` (`provider`) and the admin request (`request`). |
 | `integrations/` | Optional libraries, imported lazily: `drf` (serializer fields, validation, errors). |
-| `contrib/` | Optional Django apps (`tokens`, `oauth`). |
+| `contrib/` | Optional Django apps (`tokens`, `oauth`, `uploads`). |
 
 Where planned work goes: rate limiting and query budgets next to the code they
 guard (`throttling.py` beside `views.py`, query cost in `providers/model.py`);
@@ -837,6 +837,7 @@ writes is one of:
 {"data": "<base64>", "name": "hero.jpg"}      // inline upload
 {"path": "images/2026/hero.jpg"}              // a file already in storage, opt-in
 {"url": "https://cdn.example.com/hero.jpg"}   // fetched by the server, opt-in, experimental
+{"upload": {"batch": "…", "path": "hero.jpg"}} // sent to an upload URL, opt-in (contrib.uploads)
 null                                          // clear the field
 ```
 
@@ -959,6 +960,140 @@ class GalleryProvider(FileArgumentsMixin, Provider):
         with self.removing_uploads_on_error(files.values()), transaction.atomic():
             form.save()
 ```
+
+### Upload URLs (`xprez_mcp.contrib.uploads`)
+
+Base64 in a tool call goes through the model's context, so it cannot carry
+hundreds of files or large ones, and `url` needs a public download. With the
+uploads app, a tool hands out one-time URLs, the client sends the files
+straight from disk, and a later tool call refers to them. It needs a client
+with a disk and a shell (Claude Code, Cursor, agent loops); assistants in a
+browser keep `data`.
+
+1. A project tool calls `prepare_uploads(ctx, files, ...)` with
+   `[{"path", "sha256", "size"}]`, after leaving out what it already has (by
+   `sha256`), and returns the result: per file a `url`, `method` `PUT` and
+   `headers` (`Authorization: Bearer <key>`), plus `batch_id`, `expires_at`
+   and an `upload_hint` (a curl command line).
+2. The client runs `curl -X PUT -H "Authorization: Bearer <key>"
+   --data-binary @<path> <url>` for each file, in parallel.
+3. A later tool call refers to the files: a file argument
+   `{"upload": {"batch": "<batch_id>", "path": "<path>"}}`, or
+   `get_batch(ctx, batch_id)` for a whole batch.
+
+```python
+from xprez_mcp.contrib.uploads import get_batch, prepare_uploads
+
+
+class GalleryProvider(Provider):
+    @tool
+    def photos_prepare(self, ctx, files: list[dict[str, Any]]):
+        """Announce photos to upload: [{path, sha256, size}]."""
+        known = set(Photo.objects.values_list("sha256", flat=True))
+        return prepare_uploads(
+            ctx, [f for f in files if f.get("sha256") not in known],
+            content_types=["image/*"],
+        )
+
+    @tool
+    def photos_import(self, ctx, batch_id: str):
+        batch = get_batch(ctx, batch_id)
+        for upload in batch.received:
+            with upload.open() as file:
+                Photo.objects.create(path=upload.path, sha256=upload.sha256,
+                                     image=File(file, upload.name))
+        batch.consume()
+        return {"imported": len(batch.received), "missing": [u.path for u in batch.missing]}
+```
+
+**Preparing.** `prepare_uploads(ctx, files, *, content_types=None,
+max_size=None, max_files=None, ttl=None, batch=None)` needs a signed-in user.
+`content_types` defaults to JPEG, PNG, GIF, WebP, PDF and text (Markdown,
+JSON, CSV, plain) and takes `image/*` wildcards; SVG and HTML are accepted
+only when named. `batch` adds files to a batch of the same user, and a path
+already in it is replaced (with a new URL). Paths are checked like posix
+paths: relative, no `..`, backslashes or control characters, at most 500
+characters, each once; they are labels within the batch, never storage
+names. `sha256` is 64 hex characters, `size` whole bytes. The limits are
+`max_size` (`MAX_FILE_SIZE`), `max_files` per batch (`MAX_FILES`) and, per
+user, the bytes prepared or received and not yet used, failed or expired
+(`MAX_PENDING_BYTES`); a call over any of them is a `ToolError`.
+
+**The endpoint**, `PUT <endpoint>/uploads/<id>/`, is added to every server
+while the app is installed. The URL holds the upload's id only; the key in
+`Authorization` is the only authorization (256 bits, stored as its SHA-256,
+compared in constant time), so URLs in access logs grant nothing. One key
+is one file, written once. Other methods are 405 and nothing can be read
+back. Responses: 201 stored; 400 size, sha256 or content mismatch (the file
+is discarded and the upload marked failed with the reason, so a new
+`prepare_uploads` is needed); 409 already uploaded; 410 expired or failed;
+411 without a `Content-Length` (a chunked body; not failed, the client can
+retry); 413 larger than announced (failed too); 404 unknown id or wrong key.
+The body is streamed to a temporary file in 64 kB chunks and stopped as soon as
+it passes the announced size, never read into memory, so
+`DATA_UPLOAD_MAX_MEMORY_SIZE` does not apply. CSRF-exempt; no session or
+cookie is read. Logs name the upload's id, never the key.
+
+**Content** is judged by the bytes, not a header: JPEG, PNG, GIF, WebP and
+PDF by their signatures; text when the whole file is UTF-8 without NUL
+bytes, typed by the path's extension (`.md`, `.json`, `.csv`, `.txt`, and
+the active `.html`, `.svg`, `.xml`, `.js` and their kin), or as SVG or HTML
+when it starts like them. Anything else is `application/octet-stream`,
+accepted only when named. The name must agree: a known extension of
+another type (a PNG named `.html`, an SVG named `.md`) is refused, so the
+name a tool stores the file under never makes a web server run it. SVG,
+HTML, XML and JavaScript are accepted only when named in `content_types`,
+never through a wildcard. `UPLOADS["VALIDATOR"]`
+(`f(file, upload)`, raising `ValidationError`) adds the project's own check.
+Signatures catch a renamed file, not a crafted one: projects that keep
+images should re-encode them (Pillow) in the validator or when importing.
+
+**As a file argument**, `file_argument(("data", "upload"))` (or `"upload"`
+in a provider's `file_sources`) accepts `{"upload": {"batch", "path"}}`; the
+schema and its description say so. The tool gets a `FileValue` with
+`source` `"upload"`: `value` is a Django `File` over the staged file, opened
+on first read (always a file, whatever the size), `name` the last part of
+the path, and `size`, `sha256`, `content_type`. `read()` and `open()` work
+for `data` and `upload` alike. A provider's `max_file_size` does not apply
+to uploads, which the upload limits bound and which are streamed, not held
+in memory. An upload of another user, not received yet,
+failed, expired or already used is a readable `ToolError`. It is consumed
+when the call succeeds: inside the call's transaction when it has one, so a
+concurrent second call waits, then fails and rolls back, and a failed or
+rolled-back call can be retried with the same upload. The same upload in two
+arguments of one call is consumed once. Without a transaction (or with
+uploads routed to another database than the call's) it is consumed after
+the call; two calls at once may then both use it.
+
+**Batches.** `get_batch(ctx, batch_id)` returns the user's `Batch`, sorted by
+path: `received` (usable), `missing` (awaited), `expired`, `failed` (with
+`failure`) and `consumed`, each an `Upload` with `path`, `name`, `size`,
+`sha256`, `content_type` and `open()` (binary). `batch.consume(uploads=None)`
+marks them used; their files are deleted when the transaction commits, so
+read them first.
+
+**Storage and cleanup.** Files wait in `UPLOADS["STORAGE"]` under
+`mcp-uploads/<random>`; it is required (`xprez_mcp_uploads.E001`) because
+the default storage is often public. Used files are deleted on commit;
+`mcp_cleanup` deletes uploads whose URL expired unused, used and failed
+ones, and received ones older than `RETAIN`, with their files, and staged
+files no row knows. Schedule it hourly.
+
+```python
+"UPLOADS": {
+    "STORAGE": None,              # required: a Storage, a STORAGES alias, or a dotted path to one (not a class)
+    "TTL": 15 * 60,               # seconds an upload URL is valid
+    "RETAIN": 24 * 3600,          # seconds a received file waits to be used
+    "MAX_FILE_SIZE": 15 * 1024 * 1024,
+    "MAX_FILES": 2000,            # per batch
+    "MAX_PENDING_BYTES": 1024**3, # per user; None: no limit
+    "VALIDATOR": None,            # f(file, upload), raises ValidationError
+}
+```
+
+The web server must accept bodies of `MAX_FILE_SIZE` (nginx
+`client_max_body_size`) and should buffer them (nginx does by default), so
+slow uploads do not hold Django workers.
 
 ## Results and errors
 
@@ -1176,6 +1311,7 @@ authenticate with.
 ```python
 XPREZ_MCP = {
     "NAME": "django",              # serverInfo.name of the default server
+    "BASE_URL": None,              # "https://example.com" behind a proxy that hides it
     "VERSION": "0.0.0",
     "PERMISSION": None,            # required: f(ctx) -> bool, a dotted path to one, True or False
     "AUTODISCOVER": True,
@@ -1183,6 +1319,7 @@ XPREZ_MCP = {
     "AUTHENTICATION": ["xprez_mcp.auth.bearer_token"],
     "TOKEN_RESOLVER": None,        # "myapp.tokens.resolve"; None: contrib.tokens
     "OAUTH": {},                   # contrib.oauth, see below
+    "UPLOADS": {},                 # contrib.uploads, see "Upload URLs"
     "ALLOWED_ORIGINS": [],
     "EXCLUDE": [],
     "EXCLUDE_APPS": [],
@@ -1211,7 +1348,6 @@ With several servers, the settings are defaults:
 
 ```python
 "OAUTH": {
-    "BASE_URL": None,              # "https://example.com" behind a proxy that hides it
     "ACCESS_TOKEN_LIFETIME": 3600,
     "REFRESH_TOKEN_LIFETIME": 30 * 24 * 3600,
     "REFRESH_REUSE_INTERVAL": 10,  # seconds a rotated refresh token is a retry

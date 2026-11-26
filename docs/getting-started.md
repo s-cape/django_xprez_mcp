@@ -198,7 +198,7 @@ must be able to log in there. Then:
   the request knows it is `https://`. Clients compare the metadata with the
   URL they were given, and Django's CSRF check compares the consent form's
   `Origin` with it: without it, "Allow" fails with a CSRF 403.
-  `XPREZ_MCP["OAUTH"]["BASE_URL"]` fixes only the metadata; for CSRF,
+  `XPREZ_MCP["BASE_URL"]` fixes only the metadata; for CSRF,
   `CSRF_TRUSTED_ORIGINS` is the alternative.
 
 ### Bearer tokens
@@ -285,6 +285,57 @@ curl -s https://example.com/mcp/ \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc": "2.0", "id": 1, "method": "tools/list"}'
 ```
+
+## Send many or large files
+
+Base64 file arguments go through the model's context, which limits them to a
+few small files. With `xprez_mcp.contrib.uploads`, a client with a shell
+(Claude Code, Cursor) sends files straight from disk instead:
+
+```python
+# settings.py
+INSTALLED_APPS = [..., "xprez_mcp.contrib.uploads"]  # then migrate
+XPREZ_MCP = {
+    ...,
+    # private: not under MEDIA_ROOT
+    "UPLOADS": {"STORAGE": "myproject.storages.uploads"},
+}
+```
+
+```python
+# myapp/mcp.py
+from typing import Any
+
+from xprez_mcp import Provider, mcp, tool
+from xprez_mcp.contrib.uploads import prepare_uploads
+from xprez_mcp.core.files import file_argument
+
+from .models import Note
+
+
+@mcp.register
+class NoteFileProvider(Provider):
+    namespace = "notes"
+
+    @tool
+    def prepare_files(self, ctx, files: list[dict[str, Any]]):
+        """Get upload URLs for Markdown files: [{path, sha256, size}]."""
+        return prepare_uploads(ctx, files, content_types=["text/markdown"])
+
+    @tool
+    def import_file(self, ctx, title: str, file: file_argument(("data", "upload"))):
+        """Create a note from a file sent to its upload URL."""
+        note = Note.objects.create(
+            owner=ctx.user, title=title, text=file.read().decode()
+        )
+        return {"id": note.pk}
+```
+
+The assistant calls `notes_prepare_files`, runs the `curl` command from
+`upload_hint` for each file, then calls `notes_import_file` with
+`{"upload": {"batch": "<batch_id>", "path": "notes/a.md"}}`. Schedule
+`mcp_cleanup` hourly, and let the web server accept bodies of
+`MAX_FILE_SIZE` (15 MB by default; nginx `client_max_body_size`).
 
 ## Test your tools
 

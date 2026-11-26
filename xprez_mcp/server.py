@@ -53,6 +53,7 @@ MAX_COMPLETIONS = 100
 NAME_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 LONG_NAME = 40
 OAUTH_APP = "xprez_mcp.contrib.oauth"
+UPLOADS_APP = "xprez_mcp.contrib.uploads"
 
 _servers = weakref.WeakSet()
 
@@ -414,6 +415,10 @@ class MCPServer:
             from .contrib.oauth.urls import server_urls
 
             urls += server_urls(self)
+        if apps.is_installed(UPLOADS_APP):
+            from .contrib.uploads.urls import server_urls
+
+            urls += server_urls(self)
         return urls
 
     def get_view(self):
@@ -555,14 +560,20 @@ class MCPServer:
         if item is None:
             raise RpcError(INVALID_PARAMS, f"Unknown tool: {name}")
         using = self.get_tool_database(item)
+        ctx.tool_database = using
         try:
             with transaction.atomic(using=using) if using else nullcontext():
                 kwargs = item.spec.parse_arguments(params.get("arguments"))
                 kwargs = item.resolve_lookups(ctx, kwargs)
+                kwargs = item.resolve_files(ctx, kwargs)
                 value = item.call(ctx, kwargs)
-                if using and isinstance(value, results.ToolResult) and value.is_error:
+                failed = isinstance(value, results.ToolResult) and value.is_error
+                # inside the transaction: a hook that raises rolls the call back
+                ctx.end_call(not failed)
+                if using and failed:
                     transaction.set_rollback(True, using=using)
         except Exception as error:
+            ctx.end_call(False)
             result = self.handle_tool_error(ctx, item, error)
             logger.info("tool=%s user=%s result=error", name, _user_pk(ctx))
             return result

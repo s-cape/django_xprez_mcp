@@ -14,6 +14,7 @@ INSTALLED_APPS = [
     "xprez_mcp",
     "xprez_mcp.contrib.tokens",
     "xprez_mcp.contrib.oauth",
+    "xprez_mcp.contrib.uploads",
     "xprez_mcp.tests.testapp",
 ]
 ROOT_URLCONF = "xprez_mcp.tests.urls"
@@ -58,6 +59,7 @@ XPREZ_MCP = {
     "PERMISSION": allow_authenticated,
     "TOKEN_RESOLVER": "xprez_mcp.tests.testapp.tokens.resolve",
     "EXCLUDE": ["hidden_*"],
+    "UPLOADS": {"STORAGE": "xprez_mcp.tests.testapp.storages.upload_storage"},
 }
 LOGGING = {
     "version": 1,

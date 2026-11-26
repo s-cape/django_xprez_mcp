@@ -1,8 +1,6 @@
 from xprez_mcp import conf
 
 DEFAULTS = {
-    # "https://example.com" when the request does not know the public origin
-    "BASE_URL": None,
     "ACCESS_TOKEN_LIFETIME": 3600,
     "REFRESH_TOKEN_LIFETIME": 30 * 24 * 3600,
     # a rotated refresh token sent again this soon is a retry, not a theft

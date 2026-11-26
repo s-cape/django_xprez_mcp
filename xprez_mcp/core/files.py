@@ -2,12 +2,16 @@
 
 The transport is JSON only, so a ``FileField`` / ``ImageField`` argument is one
 of ``{"data": <base64>, "name": ...}``, ``{"path": ...}`` (a file already in the
-field's storage), ``{"url": ...}`` (fetched by the server, opt-in) or ``null``
-(clear the field, when it allows blank).
+field's storage), ``{"url": ...}`` (fetched by the server, opt-in),
+``{"upload": {"batch", "path"}}`` (sent beforehand to a one-time URL of
+``xprez_mcp.contrib.uploads``, opt-in) or ``null`` (clear the field, when it
+allows blank).
 """
 
 import base64
 import binascii
+import hashlib
+import io
 import http.client
 import ipaddress
 import mimetypes
@@ -19,10 +23,14 @@ import urllib.parse
 import urllib.request
 from functools import lru_cache
 
+from django.apps import apps
+from django.core.exceptions import ImproperlyConfigured
+
 from ..errors import InvalidArguments, ToolError
 
-SOURCES = ("data", "path", "url")
-DEFAULT_SOURCES = ("data",)  # "path" and "url" are opt-in
+SOURCES = ("data", "path", "url", "upload")
+DEFAULT_SOURCES = ("data",)  # the others are opt-in
+UPLOADS_APP = "xprez_mcp.contrib.uploads"
 
 _SHAPES = {
     "data": {
@@ -50,22 +58,80 @@ _SHAPES = {
         "required": ["url"],
         "additionalProperties": False,
     },
+    "upload": {
+        "type": "object",
+        "properties": {
+            "upload": {
+                "type": "object",
+                "properties": {
+                    "batch": {"type": "string", "description": "The batch_id"},
+                    "path": {"type": "string", "description": "The file's path"},
+                },
+                "required": ["batch", "path"],
+                "additionalProperties": False,
+            }
+        },
+        "required": ["upload"],
+        "additionalProperties": False,
+    },
 }
 _WORDS = {
     "data": "{data, name} uploads base64 content",
     "path": "{path} uses a file already in storage",
     "url": "{url} fetches a file",
+    "upload": "{upload: {batch, path}} uses a file sent to an upload URL",
 }
 
 
 class FileValue:
     """A file argument whose shape is checked: ``source`` is ``"data"`` (``value``
-    is the decoded bytes), ``"path"`` or ``"url"`` (``value`` is the string)."""
+    is the decoded bytes), ``"path"`` or ``"url"`` (``value`` is the string) or
+    ``"upload"`` (``value`` is a Django ``File`` over the received upload,
+    opened on first read; ``size``, ``sha256`` and ``content_type`` set).
 
-    def __init__(self, source, value, name=None):
+    ``read()`` and ``open()`` work for ``data`` and ``upload``.
+    """
+
+    def __init__(self, source, value, name=None, *, size=None, sha256=None):
         self.source = source
         self.value = value
         self.name = name
+        self.size = len(value) if source == "data" and size is None else size
+        self._sha256 = sha256
+        self.content_type = None
+        if source == "data" and name:
+            self.content_type = mimetypes.guess_type(name)[0]
+        self.upload = None  # the contrib.uploads row, for "upload"
+
+    @property
+    def sha256(self):
+        if self._sha256 is None and self.source == "data":
+            self._sha256 = hashlib.sha256(self.value).hexdigest()
+        return self._sha256
+
+    @sha256.setter
+    def sha256(self, value):
+        self._sha256 = value
+
+    @property
+    def resolved(self):
+        """False for an upload whose file is not looked up yet."""
+        return not (self.source == "upload" and isinstance(self.value, dict))
+
+    def open(self):
+        """The content as a binary file (``data`` and resolved ``upload``)."""
+        if self.source == "data":
+            return io.BytesIO(self.value)
+        if self.source == "upload" and self.resolved:
+            return self.value.storage.open(self.value.stored_name, "rb")
+        raise TypeError(f"open() needs a data or upload file, not {self.source}.")
+
+    def read(self):
+        """The content as bytes (``data`` and resolved ``upload``)."""
+        if self.source == "data":
+            return self.value
+        with self.open() as file:
+            return file.read()
 
     def __eq__(self, other):
         return isinstance(other, FileValue) and (
@@ -74,7 +140,12 @@ class FileValue:
         )
 
     def __repr__(self):
-        shown = f"<{len(self.value)} bytes>" if self.source == "data" else self.value
+        if self.source == "data":
+            shown = f"<{len(self.value)} bytes>"
+        elif self.source == "upload" and self.resolved:
+            shown = f"<upload {self.upload.batch}/{self.upload.path}>"
+        else:
+            shown = self.value
         return f"FileValue({self.source!r}, {shown!r}, name={self.name!r})"
 
 
@@ -111,6 +182,8 @@ class FileArgument:
             raise InvalidArguments(
                 f"{path}: {source} is not accepted here. Use {expected}."
             )
+        if source == "upload":
+            return _upload_reference(value, path)
         keys = {"data", "name"} if source == "data" else {source}
         unknown = sorted(set(value) - keys)
         if unknown:
@@ -132,6 +205,37 @@ class FileArgument:
         if not valid:
             raise InvalidArguments(f"{path}.url must be an http or https URL.")
         return FileValue("url", value["url"])
+
+
+def resolve_upload(ctx, value):
+    """Look up the file of an ``upload`` ``FileValue`` (once); needs
+    ``xprez_mcp.contrib.uploads``."""
+    if value.resolved:
+        return value
+    if not apps.is_installed(UPLOADS_APP):
+        raise ImproperlyConfigured(
+            f"The upload file source needs {UPLOADS_APP!r} in INSTALLED_APPS."
+        )
+    # imported here: the core does not depend on the optional app
+    from ..contrib.uploads.batches import resolve
+
+    return resolve(ctx, value)
+
+
+def resolve_uploads(ctx, value):
+    """``value`` (arguments, or a list or dict in them) with every upload
+    ``FileValue`` looked up."""
+    if isinstance(value, FileValue):
+        return resolve_upload(ctx, value) if value.source == "upload" else value
+    # exact types only: what argument conversion builds, not objects lookups
+    # return (it resolves in place, so containers need no copy)
+    if type(value) is dict:
+        for item in value.values():
+            resolve_uploads(ctx, item)
+    elif type(value) in (list, tuple, set, frozenset):
+        for item in value:
+            resolve_uploads(ctx, item)
+    return value
 
 
 def file_argument(sources=DEFAULT_SOURCES, nullable=False):
@@ -247,6 +351,20 @@ def _file_argument(sources, nullable):
         (FileArgument,),
         {"sources": tuple(sources), "nullable": nullable},
     )
+
+
+def _upload_reference(value, path):
+    unknown = sorted(set(value) - {"upload"})
+    if unknown:
+        raise InvalidArguments(f"{path}: unknown keys {unknown}.")
+    reference = value["upload"]
+    if not isinstance(reference, dict) or set(reference) != {"batch", "path"}:
+        raise InvalidArguments(f"{path}.upload must be {{batch, path}}.")
+    for key in ("batch", "path"):
+        if not isinstance(reference[key], str) or not reference[key].strip():
+            raise InvalidArguments(f"{path}.upload.{key} must be a non-empty string.")
+    name = posixpath.basename(reference["path"])
+    return FileValue("upload", dict(reference), name)
 
 
 def _decode(data, path):

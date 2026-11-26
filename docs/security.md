@@ -25,6 +25,17 @@ repeatedly and quickly. Go through this list before exposing a server.
 - [ ] A custom `TOKEN_RESOLVER` compares in constant time, stores only
   hashes and rejects inactive users, like `xprez_mcp.contrib.tokens`.
 
+## Uploads
+
+- [ ] `UPLOADS["STORAGE"]` is not served to the public (not under
+  `MEDIA_ROOT`, not a public bucket).
+- [ ] `content_types` of each `prepare_uploads` lists only what the tool
+  needs; SVG and HTML only when they are never served as pages.
+- [ ] Images that are kept are re-encoded (Pillow) by a `VALIDATOR` or the
+  importing tool: the signature check catches renamed files, not crafted ones.
+- [ ] The web server allows bodies of `MAX_FILE_SIZE` and buffers them.
+- [ ] `mcp_cleanup` runs hourly.
+
 ## OAuth
 
 - [ ] `access_token` comes before `bearer_token` in `AUTHENTICATION`
@@ -33,7 +44,7 @@ repeatedly and quickly. Go through this list before exposing a server.
 - [ ] Behind a proxy, `SECURE_PROXY_SSL_HEADER` is set (or the public
   origin is in `CSRF_TRUSTED_ORIGINS`): the consent form's POST fails
   Django's CSRF check otherwise. The metadata must show the public origin
-  too (`SECURE_PROXY_SSL_HEADER` or `OAUTH["BASE_URL"]`): clients check the
+  too (`SECURE_PROXY_SSL_HEADER` or `XPREZ_MCP["BASE_URL"]`): clients check the
   issuer and the resource URL.
 - [ ] The consent page keeps the client name, its publisher or "registered
   itself", the redirect host and the signed-in user visible after styling.

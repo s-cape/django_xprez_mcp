@@ -8,7 +8,7 @@ from contextlib import contextmanager
 
 from django.apps import apps
 from django.core.exceptions import SuspiciousFileOperation
-from django.core.files.uploadedfile import SimpleUploadedFile
+from django.core.files.uploadedfile import SimpleUploadedFile, UploadedFile
 from django.db import models
 from django.utils.datastructures import MultiValueDict
 
@@ -29,7 +29,7 @@ class FileArgumentsMixin:
     ``removing_uploads_on_error``.
     """
 
-    file_sources = DEFAULT_SOURCES  # ["data"]; "path" and "url" are opt-in
+    file_sources = DEFAULT_SOURCES  # ["data"]; "path", "url", "upload" are opt-in
     max_file_size = 10 * 1024 * 1024  # bytes, uploads and fetches; None: no limit
     file_fetch_timeout = 10  # seconds
 
@@ -68,9 +68,12 @@ class FileArgumentsMixin:
         return data, files
 
     def resolve_file(self, ctx, field, value):
-        """An uploaded file (``data``, ``url``) or a stored one (``path``)."""
+        """An uploaded file (``data``, ``url``, ``upload``) or a stored one
+        (``path``)."""
         if value.source == "path":
             return self.stored_file(ctx, field, value.value)
+        if value.source == "upload":
+            return self.uploaded_file(ctx, field, value)
         content_type = None
         if value.source == "url":
             content, name, content_type = self.fetch_file(ctx, field, value.value)
@@ -91,6 +94,23 @@ class FileArgumentsMixin:
         # save stored (see removing_uploads_on_error)
         upload = field.attr_class(None, field, name)
         upload.file = SimpleUploadedFile(name, content, content_type)
+        upload._committed = False
+        upload._mcp_upload = True
+        return upload
+
+    def uploaded_file(self, ctx, field, value):
+        """A file sent to an upload URL (``xprez_mcp.contrib.uploads``)."""
+        # bounded by the upload's own limits and streamed from storage, so
+        # max_file_size (which keeps data and url out of memory) does not apply
+        file_arguments.resolve_upload(ctx, value)
+        limit = field.max_length
+        if limit is not None:
+            limit = max(limit - len(upload_prefix(field) or ""), 8)
+        name = file_arguments.shorten_name(value.name, limit)
+        content = value.open()
+        ctx.on_call_end(lambda ok: content.close())
+        upload = field.attr_class(None, field, name)
+        upload.file = UploadedFile(content, name, value.content_type, value.size)
         upload._committed = False
         upload._mcp_upload = True
         return upload

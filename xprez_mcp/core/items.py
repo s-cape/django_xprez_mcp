@@ -7,7 +7,7 @@ from functools import cached_property
 from django.apps import apps
 from django.core.exceptions import ImproperlyConfigured
 
-from . import schema
+from . import files, schema
 from .arguments import find_lookups, resolve_lookups
 from ..permissions import allows, validate_permission
 
@@ -227,6 +227,10 @@ class Item:
             )
             for key, value in kwargs.items()
         }
+
+    def resolve_files(self, ctx, kwargs):
+        """``kwargs`` with upload file arguments looked up."""
+        return files.resolve_uploads(ctx, kwargs)
 
     def call(self, ctx, kwargs):
         return self.invoke(self.spec.func, ctx, **kwargs)
