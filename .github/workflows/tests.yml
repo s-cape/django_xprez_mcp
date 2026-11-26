@@ -55,7 +55,7 @@ jobs:
         with:
           python-version: "3.13"
           cache: pip
-      - run: pip install -e . "Django~=5.2.0" djangorestframework
+      - run: pip install -e . "Django~=5.2.0" djangorestframework annotated-types
       - run: python -m django test xprez_mcp.tests --settings=xprez_mcp.tests.settings
 
   test-postgresql:

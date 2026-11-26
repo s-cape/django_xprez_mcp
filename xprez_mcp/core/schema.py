@@ -12,6 +12,8 @@ from typing import Annotated, Any, Literal, Union, get_args, get_origin
 from django.core.exceptions import ImproperlyConfigured
 
 from ..errors import InvalidArguments
+from .arguments import OutOfRange, check_limits, limits, limits_schema
+from .arguments import wire_annotation
 from .files import FileArgument
 
 EMPTY = inspect.Parameter.empty
@@ -55,6 +57,11 @@ def wire_parameters(func):
 
 
 def type_hints(func):
+    """Hints as the client sees them: a ``Lookup`` replaced by its input type."""
+    return {name: wire_annotation(hint) for name, hint in raw_type_hints(func).items()}
+
+
+def raw_type_hints(func):
     try:
         return typing.get_type_hints(func, include_extras=True)
     except Exception:
@@ -83,8 +90,17 @@ def split_annotated(annotation):
 
 
 def annotation_schema(annotation):
+    found = annotated_limits(annotation)
     annotation, description = split_annotated(annotation)
     schema = _schema(annotation)
+    if found:
+        keywords, note = limits_schema(annotation, found)
+        schema = {**schema, **keywords}
+        if note and description:
+            end = "" if description.rstrip().endswith((".", "!", "?")) else "."
+            description = f"{description.rstrip()}{end} {note}"
+        elif note:
+            description = note
     if description:
         schema = {**schema, "description": description}
     return schema
@@ -111,6 +127,14 @@ def signature_schema(func):
     if not accepts_extra(func):
         schema["additionalProperties"] = False
     return schema
+
+
+def annotated_limits(annotation):
+    """Number and length constraints of ``Annotated[X, Range(...), ...]``."""
+    if get_origin(annotation) is Annotated:
+        base, *metadata = get_args(annotation)
+        return limits(base, metadata)
+    return {}
 
 
 def parameter_description(func, name):
@@ -155,7 +179,13 @@ def coerce_strings(func, values):
 
 
 def coerce(annotation, value, path):
-    annotation, _ = split_annotated(annotation)
+    found = annotated_limits(annotation)
+    value = _coerce(split_annotated(annotation)[0], value, path)
+    check_limits(found, value, path)
+    return value
+
+
+def _coerce(annotation, value, path):
     if annotation is EMPTY or annotation is Any:
         return value
     if annotation is type(None):
@@ -207,12 +237,15 @@ def coerce(annotation, value, path):
                 return value
         raise _invalid(path, f"one of {list(args)}")
     if _is_union(annotation):
+        out_of_range = None
         for option in sorted(args, key=lambda arg: arg is not type(None)):
             try:
                 return coerce(option, value, path)
+            except OutOfRange as error:
+                out_of_range = out_of_range or error
             except InvalidArguments:
                 continue
-        raise InvalidArguments(f"{path} has an invalid value.")
+        raise out_of_range or InvalidArguments(f"{path} has an invalid value.")
     if annotation in (list, set, frozenset, tuple) or origin in (
         list,
         set,
@@ -241,16 +274,25 @@ def coerce(annotation, value, path):
 
 
 def from_string(annotation, value, path):
-    annotation, _ = split_annotated(annotation)
+    found = annotated_limits(annotation)
+    value = _from_string(split_annotated(annotation)[0], value, path)
+    check_limits(found, value, path)
+    return value
+
+
+def _from_string(annotation, value, path):
     if _is_union(annotation):
+        out_of_range = None
         for option in get_args(annotation):
             if option is type(None):
                 continue
             try:
                 return from_string(option, value, path)
+            except OutOfRange as error:
+                out_of_range = out_of_range or error
             except InvalidArguments:
                 continue
-        raise InvalidArguments(f"{path} has an invalid value.")
+        raise out_of_range or InvalidArguments(f"{path} has an invalid value.")
     try:
         if annotation is bool:
             if value.lower() in ("true", "1", "yes"):

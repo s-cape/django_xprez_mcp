@@ -44,6 +44,7 @@ def check_servers(app_configs=None, **kwargs):
                 )
         names.setdefault(server.name, []).append(server)
         errors += check_names(server)
+        errors += check_atomic(server)
     for name, servers in names.items():
         if len(servers) > 1:
             errors.append(
@@ -56,6 +57,32 @@ def check_servers(app_configs=None, **kwargs):
                 )
             )
     return errors
+
+
+def check_atomic(server):
+    """``atomic_writes`` and ``@tool(atomic=...)`` name configured databases."""
+    try:
+        tools = list(server.catalog["tool"].values())
+    except ImproperlyConfigured:
+        return []  # reported by check_names or when the catalog is used
+    bad = set()
+    for item in tools:
+        try:
+            server.get_tool_database(item)
+        except ImproperlyConfigured:
+            bad.add(item.name)
+    if not bad:
+        return []
+    return [
+        checks.Error(
+            f"MCP server {server.name!r}: atomic writes of {', '.join(sorted(bad))} "
+            "name no configured database.",
+            hint='Set XPREZ_MCP["ATOMIC_WRITES"], MCPServer(atomic_writes=...) or '
+            "@tool(atomic=...) to True, False or a key of DATABASES.",
+            obj=server,
+            id="xprez_mcp.E005",
+        )
+    ]
 
 
 def check_names(server):

@@ -8,6 +8,7 @@ from django.apps import apps
 from django.core.exceptions import ImproperlyConfigured
 
 from . import schema
+from .arguments import find_lookups, resolve_lookups
 from ..permissions import allows, validate_permission
 
 URI_PARAMETER = re.compile(r"\{(\w+)\}")
@@ -32,6 +33,16 @@ class Spec:
         self.description = inspect.cleandoc(description)
         # checked now, so a bad permission fails at import, not per call
         self.permission = validate_permission(permission, f"permission of {self.name}")
+
+    @cached_property
+    def lookups(self):
+        """``{parameter: annotation}`` of the parameters that hold a ``Lookup``."""
+        hints = schema.raw_type_hints(self.func)
+        return {
+            param.name: hints[param.name]
+            for param in schema.wire_parameters(self.func)
+            if param.name in hints and find_lookups(hints[param.name])
+        }
 
 
 class CompletionMixin:
@@ -58,9 +69,16 @@ class ToolSpec(Spec):
         destructive=None,
         idempotent=None,
         open_world=None,
+        atomic=None,
         **options,
     ):
         super().__init__(func, **options)
+        if not (atomic is None or isinstance(atomic, (bool, str))):
+            raise ImproperlyConfigured(
+                f"{func.__qualname__}: atomic must be True, False, None or a "
+                "database alias."
+            )
+        self.atomic = atomic
         self.raw_input_schema = input_schema
         self.output_schema = output_schema
         self.hints = {
@@ -152,6 +170,26 @@ class Item:
         source = type(provider) if provider is not None else spec.func
         self.module = source.__module__
         self.source = f"{source.__module__}.{source.__qualname__}"
+        self.check_lookups()
+
+    def check_lookups(self):
+        lookups = [
+            lookup
+            for annotation in self.spec.lookups.values()
+            for lookup in find_lookups(annotation)
+        ]
+        if lookups and self.kind != "tool":
+            raise ImproperlyConfigured(
+                f"{self.source}: Lookup arguments are supported on tools only."
+            )
+        for lookup in lookups:
+            if not isinstance(lookup.resolver, str):
+                continue
+            if not callable(getattr(self.provider, lookup.resolver, None)):
+                raise ImproperlyConfigured(
+                    f"{self.source}: Lookup({lookup.resolver!r}) needs a provider "
+                    f"with a {lookup.resolver}() method."
+                )
 
     @property
     def kind(self):
@@ -175,6 +213,20 @@ class Item:
         if self.provider is not None:
             return func(self.provider, ctx, *args, **kwargs)
         return func(ctx, *args, **kwargs)
+
+    def resolve_lookups(self, ctx, kwargs):
+        """``kwargs`` with each lookup argument replaced by its object."""
+        lookups = self.spec.lookups
+        if not lookups:
+            return kwargs
+        return {
+            key: (
+                resolve_lookups(lookups[key], value, self.provider, ctx)
+                if key in lookups
+                else value
+            )
+            for key, value in kwargs.items()
+        }
 
     def call(self, ctx, kwargs):
         return self.invoke(self.spec.func, ctx, **kwargs)

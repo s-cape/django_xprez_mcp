@@ -104,7 +104,8 @@ only in `providers.admin`, which is imported lazily.
 | `views.py` | The HTTP endpoint. |
 | `auth.py`, `permissions.py` | Authentication backends and permission callables (safe to import from settings: nothing in the package reads settings or models at import time). |
 | `errors.py`, `conf.py`, `checks.py`, `apps.py` | Exceptions, settings, system checks, app config. |
-| `core/` | Specs and items, decorators, `CallContext`, schemas and argument conversion, results, file arguments. |
+| `core/` | Specs and items, decorators, `CallContext`, schemas and argument conversion, argument markers (`Lookup`, `Range`, `Length` in `arguments`), results, file arguments. |
+| `testing.py` | `McpTestCase`, for projects' own tests; `contrib/oauth/testing.py` adds `access_token`. |
 | `providers/` | `Provider` (`base`), `ModelProvider` (`model`), model fields as arguments (`fields`), generic mode (`generic`). |
 | `providers/files.py` | `FileArgumentsMixin` (exported from `xprez_mcp.providers`) and the form helpers `form_files`, `closing_stored_files`, `check_cleared`: file arguments turned into files for any provider. |
 | `providers/admin/` | `AdminProvider` (`provider`) and the admin request (`request`). |
@@ -199,6 +200,80 @@ mcp.register(OurCRMProvider)
 Items are collected through the MRO in definition order. Redefining a method
 without a decorator removes it from MCP; to keep it exposed, decorate the
 override again.
+
+### Lookup arguments
+
+Hand-written tools mostly start by turning a reference into an object and
+checking access. `Lookup` does that before the tool runs:
+
+```python
+from typing import Annotated
+
+from xprez_mcp import Lookup, Provider, ToolError, tool
+
+
+def get_client(ctx, value, *, write=False):
+    client = Client.objects.filter(account_manager=ctx.user, slug=value).first()
+    if client is None:
+        raise ToolError(f"No client {value!r}.")
+    if write and client.archived:
+        raise ToolError(f"{client} is archived.")
+    return client
+
+
+class ClientProvider(Provider):
+    namespace = "clients"
+
+    def get_contact(self, ctx, value):
+        return Contact.objects.get(client__account_manager=ctx.user, pk=value)
+
+    @tool(read_only=True)
+    def show(self, ctx, client: Annotated[Client, Lookup(get_client)]):
+        ...
+
+    @tool(idempotent=True)
+    def move_contacts(
+        self,
+        ctx,
+        client: Annotated[Client, Lookup(get_client, write=True), "Slug"],
+        contacts: list[Annotated[Contact, Lookup("get_contact", type=int)]],
+    ):
+        ...
+```
+
+- `Lookup(resolver, *, type=str, **options)`: the client sends a value of
+  `type` (the schema shows that type and the parameter's description); after
+  the arguments are converted, the tool gets `resolver(ctx, value,
+  **options)`. Options let one resolver serve read and write tools.
+- A string resolver names a method of the tool's provider. Using one on a
+  standalone function, or naming a method the provider lacks, raises
+  `ImproperlyConfigured` when the catalog is built.
+- `ToolError`, `PermissionDenied` and `ObjectDoesNotExist` from the resolver
+  become the usual error result, as if the tool had raised them.
+- A lookup can be the whole annotation, optional (`Annotated[X, Lookup(...)]
+  | None`: `null` stays `None`), the items of a list, set or tuple (each item
+  resolved, one query per item) or the values of a `dict[str, ...]`. A lookup
+  in a union with other types is rejected.
+- Tools only: a lookup in a resource or prompt raises `ImproperlyConfigured`
+  when the catalog is built.
+- Lookups run inside the tool's transaction (see below), so a resolver may
+  use `select_for_update()`.
+
+### Transactions
+
+`MCPServer(atomic_writes=True)` (default: `XPREZ_MCP["ATOMIC_WRITES"]`,
+`False`) runs every tool that is not `read_only` in `transaction.atomic()`:
+argument conversion, lookups and the tool. A database alias instead of `True`
+picks the database. `@tool(atomic=True | False | "alias")` overrides it per
+tool, read-only ones included.
+
+An alias that is not in `DATABASES` is reported by the system check
+`xprez_mcp.E005`.
+
+The transaction is rolled back on every error result: an exception (mapped
+or not) and a returned `ToolResult(is_error=True)`, so an error never leaves
+partial writes. `error_handler` functions run after the rollback.
+Generated model and admin tools keep their own `atomic()` blocks, which nest.
 
 ### Models
 
@@ -713,6 +788,8 @@ The input schema is derived from type hints: `str`, `int`, `float`, `bool`,
 `Decimal`, `date`, `datetime`, `UUID`, `Enum`, `Literal`, `list[X]`,
 `dict[str, X]`, `X | None`. `Annotated[X, "text"]` adds a description.
 Parameters without a default are required; unknown arguments are rejected.
+`Annotated[X, Lookup(...)]` takes a reference and passes an object (see
+[Lookup arguments](#lookup-arguments)).
 Arguments are validated and converted before the call (an ISO string becomes
 a `date`, a value becomes an `Enum` member).
 
@@ -721,6 +798,34 @@ one (validated with a small JSON Schema subset, passed through unconverted).
 
 Resource URI parameters and prompt arguments arrive as strings and are
 converted with the same type hints.
+
+### Number and length constraints
+
+```python
+from xprez_mcp import Length, Range
+
+weeks: Annotated[int, Range(1, 52)]          # {"type": "integer", "minimum": 1, "maximum": 52}
+code: Annotated[str, Length(max=10)]         # maxLength
+names: Annotated[list[str], Length(1, 200)]  # minItems, maxItems
+```
+
+`Range(min=None, max=None)` (inclusive) applies to `int`, `float` and
+`Decimal`; `Length(min=None, max=None)` to `str` (characters) and lists, sets
+and tuples (items). Elsewhere they raise `ImproperlyConfigured` when the
+schema is built. A `Decimal` is sent as a string, so its limits go into the
+description instead of `minimum` / `maximum`. NaN is outside every range.
+
+The markers of the `annotated_types` package (`Gt`, `Ge`, `Lt`, `Le`,
+`Interval`, `MultipleOf`, `MinLen`, `MaxLen`, `Len`) work the same, with `Gt` /
+`Lt` as `exclusiveMinimum` / `exclusiveMaximum`; they are recognised by their
+module, so the package is not a dependency. One that does not fit the type,
+and other kinds (`Predicate`, `Timezone`...), are ignored: they may be meant
+for another library.
+
+Values are checked after conversion, with messages like
+`weeks must be between 1 and 52.` or `names must have at least 1 item.`;
+resource and prompt arguments too. In a union, a value that fits a branch's
+type but not its limits is still tried against the other branches.
 
 ### File arguments
 
@@ -1013,7 +1118,7 @@ the site's login (`LOGIN_URL`) and allow the client.
   `ConnectionsView` is a ready one (login required). In the admin,
   `GrantAdmin` shows others' connections only with `manage_others_grant`
   (`has_manage_others_permission`, as in `TokenAdmin`).
-- `mcp_oauth_cleanup` (run daily) deletes expired codes and tokens,
+- `mcp_cleanup` (scheduled hourly) deletes expired codes and tokens,
   connections that can no longer be refreshed, and clients nobody connected
   within `UNUSED_CLIENT_DAYS`.
 
@@ -1084,14 +1189,15 @@ XPREZ_MCP = {
     "ALLOW_WRITES": [],            # third-party apps whose writes are exposed (experimental)
     "LIST_PAGE_SIZE": None,        # page size of */list; None sends everything (experimental)
     "RELATED_LABELS": False,       # related records as {"id", "display"}
+    "ATOMIC_WRITES": False,        # tools that are not read_only in atomic(); or an alias
 }
 ```
 
 With several servers, the settings are defaults:
 
 - `NAME`, `VERSION`, `AUTHENTICATION`, `PERMISSION`, `ALLOWED_ORIGINS`,
-  `LIST_PAGE_SIZE` and `RELATED_LABELS` are replaced by the matching
-  `MCPServer` argument.
+  `LIST_PAGE_SIZE`, `RELATED_LABELS` and `ATOMIC_WRITES` are replaced by the
+  matching `MCPServer` argument.
   `ALLOW_WRITES` is combined with the server's `allow_writes`.
 - `EXCLUDE` and `EXCLUDE_APPS` are combined with the server's `exclude` /
   `exclude_apps`. A server can exclude more but never bring back what the
@@ -1131,8 +1237,36 @@ servers that share a name, including two unnamed ones falling back to `NAME`.
   source, and with `--user` which ones that user cannot see. It also lists
   write tools held back by `ALLOW_WRITES` and admin entries (`list_filter`,
   inlines) that `AdminProvider` could not map.
-- `mcp_oauth_cleanup` (with `xprez_mcp.contrib.oauth`) deletes expired OAuth
-  codes and tokens, dead connections and unused clients.
+- `mcp_cleanup [--only APP_LABEL ...]` deletes what the installed apps no
+  longer need; with `xprez_mcp.contrib.oauth`, expired codes and tokens, dead
+  connections and unused clients. Nothing runs it for you: schedule it hourly
+  (cron, a systemd timer, Celery beat). It prints one line of counts per app;
+  an app that fails is logged and the others still run, and the command then
+  exits with an error so the scheduler reports it.
+  An app takes part by giving its `AppConfig` a method
+  `mcp_cleanup(self, now) -> {"what": count}`; a project's own apps can too.
+
+## Testing
+
+`xprez_mcp.testing.McpTestCase` (a `TestCase`) talks to a server the way a
+client does; it needs no optional app.
+
+- `mcp_url`: the endpoint (default: the default server's).
+- `rpc(method, params=None, user=None, token=None)`: the response.
+- `call(name, /, user=None, **arguments)`: `(structuredContent, result)`;
+  fails the test on an error.
+- `assertToolError(name, /, user=None, **arguments)`: the error text; fails
+  the test when the tool succeeds.
+- `user=` (default `mcp_user`) signs in through the first of the server's
+  backends it can serve: an OAuth access token (`contrib.oauth`), a stored
+  token (`contrib.tokens`), or the session (`force_login`). Tokens are made in
+  the database and reused within a test, per endpoint. `user=None` sends an
+  anonymous request (and logs the test client out). Other backends: pass
+  `token=` or override `mcp_credentials(user)`.
+
+`xprez_mcp.contrib.oauth.testing.access_token(user, url=None,
+client_name="Test client")` creates the client, grant and access token rows
+directly and returns the token, for an endpoint path or URL.
 
 ## Hardening *(planned)*
 

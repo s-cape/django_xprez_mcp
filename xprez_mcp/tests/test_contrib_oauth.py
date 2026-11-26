@@ -10,7 +10,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 
 from django.contrib.auth.models import Permission, User
 from django.core.cache import cache
-from django.core.management import call_command
+from django.core.management import CommandError, call_command
 from django.test import Client as DjangoClient
 from django.test import override_settings
 from django.utils import timezone
@@ -856,14 +856,22 @@ class MaintenanceTests(OAuthTestCase):
             created=timezone.now() - timedelta(days=30)
         )
         out = StringIO()
-        call_command("mcp_oauth_cleanup", stdout=out)
+        call_command("mcp_cleanup", stdout=out)
+        self.assertIn("xprez_mcp_oauth: 0 codes", out.getvalue())
         self.assertIn("1 clients", out.getvalue())
         self.assertTrue(Grant.objects.exists())
 
         AccessToken.objects.update(expires=timezone.now())
         RefreshToken.objects.update(expires=timezone.now())
-        call_command("mcp_oauth_cleanup", stdout=out)
+        call_command("mcp_cleanup", "--only", "xprez_mcp_oauth", stdout=out)
         self.assertFalse(Grant.objects.exists())
+
+    def test_cleanup_only(self):
+        with self.assertRaisesMessage(
+            CommandError,
+            "No cleanup for xprez_mcp_tokens, nope; apps with one: xprez_mcp_oauth.",
+        ):
+            call_command("mcp_cleanup", "--only", "xprez_mcp_tokens", "nope")
 
     def test_backend_order_check(self):
         server = MCPServer(

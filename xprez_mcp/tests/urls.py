@@ -3,6 +3,7 @@ from django.urls import include, path
 from xprez_mcp import mcp
 from xprez_mcp.contrib.oauth.views import ConnectionsView
 from xprez_mcp.tests.testapp.admin_servers import admin_generic_mcp, admin_mcp
+from xprez_mcp.tests.testapp.domain_servers import domain_mcp, plain_mcp
 from xprez_mcp.tests.testapp.file_servers import (
     files_admin_mcp,
     files_form_mcp,
@@ -31,6 +32,8 @@ urlpatterns = [
     path("files-generic/mcp/", files_generic_mcp.urls),
     path("files-admin/mcp/", files_admin_mcp.urls),
     path("files-form/mcp/", files_form_mcp.urls),
+    path("domain/mcp/", domain_mcp.urls),
+    path("plain/mcp/", plain_mcp.urls),
 ]
 
 try:

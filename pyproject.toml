@@ -33,6 +33,7 @@ Issues = "https://github.com/s-cape/django_xprez_mcp/issues"
 
 [project.optional-dependencies]
 dev = [
+    "annotated-types",
     "black",
     "djangorestframework",
 ]

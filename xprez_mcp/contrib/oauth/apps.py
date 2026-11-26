@@ -9,3 +9,9 @@ class OAuthConfig(AppConfig):
 
     def ready(self):
         from . import checks  # noqa: F401  (registers the system checks)
+
+    def mcp_cleanup(self, now):
+        """Run by ``mcp_cleanup``."""
+        from .cleanup import cleanup
+
+        return cleanup(now)

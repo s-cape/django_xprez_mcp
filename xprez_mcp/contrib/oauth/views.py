@@ -389,7 +389,7 @@ class TokenView(CorsView):
 
 class RegisterView(CorsView):
     """Dynamic client registration (RFC 7591), open to anyone but rate
-    limited per IP; ``mcp_oauth_cleanup`` deletes clients never used."""
+    limited per IP; ``mcp_cleanup`` deletes clients never used."""
 
     http_method_names = ["post", "options"]
     max_body = 10_000

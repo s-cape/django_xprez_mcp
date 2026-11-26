@@ -11,7 +11,9 @@ def tool(func=None, **options):
     """Expose a provider method (or, through ``MCPServer.tool``, a function) as a tool.
 
     Options: name, title, description, permission, read_only, destructive,
-    idempotent, open_world, input_schema, output_schema.
+    idempotent, open_world, input_schema, output_schema, atomic (True, False
+    or a database alias: run in a transaction; None follows the server's
+    ``atomic_writes`` for tools that are not read_only).
     """
 
     def decorator(func):

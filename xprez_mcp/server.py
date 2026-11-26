@@ -4,6 +4,7 @@ import inspect
 import logging
 import re
 import weakref
+from contextlib import nullcontext
 from pathlib import Path
 
 from django.apps import apps
@@ -15,6 +16,7 @@ from django.core.exceptions import (
     ValidationError,
 )
 from django.core.signals import setting_changed
+from django.db import DEFAULT_DB_ALIAS, connections, transaction
 from django.dispatch import receiver
 from django.http import Http404
 from django.urls import path
@@ -78,9 +80,12 @@ class MCPServer:
         allow_writes=(),
         list_page_size=None,
         related_labels=None,
+        atomic_writes=None,
     ):
         if exposure not in ("tools", "generic"):
             raise ValueError("exposure must be 'tools' or 'generic'.")
+        if not (atomic_writes is None or isinstance(atomic_writes, (bool, str))):
+            raise ValueError("atomic_writes must be True, False or a database alias.")
         self._name = name
         self._version = version
         self.title = title
@@ -95,6 +100,7 @@ class MCPServer:
         self.allow_writes = list(allow_writes)
         self._list_page_size = list_page_size
         self._related_labels = related_labels
+        self._atomic_writes = atomic_writes
         self._registry = {}
         self._admin_sites = []
         self._trusted_providers = set()
@@ -143,6 +149,14 @@ class MCPServer:
         if self._related_labels is not None:
             return self._related_labels
         return conf.get("RELATED_LABELS")
+
+    @property
+    def atomic_writes(self):
+        """Run tools that are not read_only in a transaction: True (the default
+        database), a database alias, or False."""
+        if self._atomic_writes is not None:
+            return self._atomic_writes
+        return conf.get("ATOMIC_WRITES")
 
     @property
     def allowed_origins(self):
@@ -540,15 +554,37 @@ class MCPServer:
         item = self.get_item("tool", name, ctx)
         if item is None:
             raise RpcError(INVALID_PARAMS, f"Unknown tool: {name}")
+        using = self.get_tool_database(item)
         try:
-            kwargs = item.spec.parse_arguments(params.get("arguments"))
-            value = item.call(ctx, kwargs)
+            with transaction.atomic(using=using) if using else nullcontext():
+                kwargs = item.spec.parse_arguments(params.get("arguments"))
+                kwargs = item.resolve_lookups(ctx, kwargs)
+                value = item.call(ctx, kwargs)
+                if using and isinstance(value, results.ToolResult) and value.is_error:
+                    transaction.set_rollback(True, using=using)
         except Exception as error:
             result = self.handle_tool_error(ctx, item, error)
             logger.info("tool=%s user=%s result=error", name, _user_pk(ctx))
             return result
         logger.info("tool=%s user=%s result=ok", name, _user_pk(ctx))
         return results.tool_result(value)
+
+    def get_tool_database(self, item):
+        """The alias of the database a call of ``item`` runs in a transaction
+        on, or None: ``@tool(atomic=...)``, else ``atomic_writes`` for tools
+        that are not read_only."""
+        atomic = item.spec.atomic
+        if atomic is None:
+            atomic = not item.spec.hints["readOnlyHint"] and self.atomic_writes
+        if not atomic:
+            return None
+        using = DEFAULT_DB_ALIAS if atomic is True else atomic
+        if not isinstance(using, str) or using not in connections.settings:
+            raise ImproperlyConfigured(
+                f"Tool {item.name}: atomic writes need True, False or a database "
+                f"alias, not {atomic!r}."
+            )
+        return using
 
     def handle_tool_error(self, ctx, item, error):
         for exception_class, handler in self._error_handlers:
