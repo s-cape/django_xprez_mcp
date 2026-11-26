@@ -238,3 +238,24 @@ class ValidateJsonTests(SimpleTestCase):
             with self.subTest(value=value):
                 with self.assertRaisesMessage(InvalidArguments, message):
                     validate_json(self.schema, value)
+
+
+class FromStringTests(SimpleTestCase):
+    def test_datetime_forms(self):
+        def tool(ctx, when: datetime.datetime):
+            pass
+
+        utc = datetime.timezone.utc
+        cases = {
+            # "Z" is what clients send; Python before 3.11 does not read it
+            "2024-01-02T10:00:00Z": datetime.datetime(2024, 1, 2, 10, tzinfo=utc),
+            "2024-01-02T10:00:00+00:00": datetime.datetime(2024, 1, 2, 10, tzinfo=utc),
+            "2024-01-02T10:00:00": datetime.datetime(2024, 1, 2, 10),
+            "2024-01-02": datetime.datetime(2024, 1, 2),
+        }
+        for value, expected in cases.items():
+            with self.subTest(value=value):
+                kwargs = coerce_arguments(tool, {"when": value})
+                self.assertEqual(kwargs, {"when": expected})
+        with self.assertRaises(InvalidArguments):
+            coerce_arguments(tool, {"when": "tomorrow"})

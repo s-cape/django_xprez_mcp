@@ -1,10 +1,12 @@
 import json
 
 from django.contrib.auth.models import Permission, User
+from django.core.exceptions import ValidationError
 from django.core.management import call_command
+from django.db.models import ProtectedError
 from django.test import TestCase, override_settings
 from io import StringIO
-from xprez_mcp import mcp
+from xprez_mcp import MCPServer, mcp
 from xprez_mcp.permissions import allow_authenticated
 
 
@@ -463,3 +465,98 @@ class InspectCommandTests(MCPTestCase):
             line for line in out.getvalue().splitlines() if "staff_report" in line
         )
         self.assertTrue(line.endswith("(hidden)"))
+
+
+class MalformedParamsTests(MCPTestCase):
+    """Wrong shapes are invalid params, not internal errors."""
+
+    def test_invalid_params(self):
+        cases = [
+            ("tools/call", {"name": ["notes_search"]}),
+            ("tools/call", {"name": {"a": 1}}),
+            ("prompts/get", {"name": ["x"]}),
+            ("completion/complete", {"ref": "notes"}),
+            ("completion/complete", {"ref": {"type": "ref/prompt"}, "argument": "x"}),
+            (
+                "completion/complete",
+                {
+                    "ref": {"type": "ref/prompt", "name": "notes_summarize"},
+                    "argument": {"name": "style", "value": 1},
+                },
+            ),
+            (
+                "completion/complete",
+                {
+                    "ref": {"type": "ref/prompt", "name": "notes_summarize"},
+                    "argument": {"name": "style", "value": "l"},
+                    "context": "x",
+                },
+            ),
+        ]
+        for method, params in cases:
+            with self.subTest(method=method, params=params):
+                self.assertEqual(self.error(method, params)["code"], -32602)
+
+    def test_meta_must_be_an_object(self):
+        self.assertEqual(self.result("ping", {"_meta": "x"}), {})
+
+    def test_nan_is_a_parse_error(self):
+        for constant in ("NaN", "Infinity", "-Infinity"):
+            with self.subTest(constant=constant):
+                body = (
+                    '{"jsonrpc": "2.0", "id": 1, "method": "ping", '
+                    f'"params": {{"x": {constant}}}}}'
+                )
+                self.assertEqual(self.post(body).json()["error"]["code"], -32700)
+
+
+class ErrorResultTests(TestCase):
+    def call(self, func, **options):
+        server = MCPServer(name="errors", permission=True)
+        server.tool(func, name="run", **options)
+        return server.call_tool(server.get_context(None, None), {"name": "run"})
+
+    def test_validation_error_keeps_field_names(self):
+        def run(ctx):
+            raise ValidationError({"name": ["Required."], "age": ["Too young."]})
+
+        result = self.call(run)
+        self.assertTrue(result["isError"])
+        self.assertEqual(
+            result["structuredContent"],
+            {
+                "error": "Invalid data. name: Required.; age: Too young.",
+                "fields": {"name": ["Required."], "age": ["Too young."]},
+            },
+        )
+
+    def test_protected_delete(self):
+        def run(ctx):
+            raise ProtectedError("Cannot delete.", {object(), object()})
+
+        result = self.call(run)
+        self.assertTrue(result["isError"])
+        self.assertEqual(
+            result["content"][0]["text"],
+            "This cannot be deleted: 2 related objects depend on it.",
+        )
+
+    def test_integrity_error(self):
+        def run(ctx):
+            User.objects.create(username="twice")
+            User.objects.create(username="twice")
+
+        result = self.call(run, atomic=True)
+        self.assertTrue(result["isError"])
+        text = result["content"][0]["text"]
+        self.assertIn("conflicts with existing data", text)
+        self.assertNotIn("username", text)  # no table or column names
+        self.assertFalse(User.objects.filter(username="twice").exists())
+
+    def test_nan_results_are_valid_json(self):
+        result = self.call(lambda ctx: {"ratio": float("nan"), "top": float("inf")})
+        self.assertEqual(result["structuredContent"], {"ratio": None, "top": None})
+        self.assertEqual(
+            json.loads(result["content"][0]["text"], parse_constant=self.fail),
+            {"ratio": None, "top": None},
+        )

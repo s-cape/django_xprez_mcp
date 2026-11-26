@@ -45,6 +45,7 @@ def check_servers(app_configs=None, **kwargs):
         names.setdefault(server.name, []).append(server)
         errors += check_names(server)
         errors += check_atomic(server)
+        errors += check_schemas(server)
     for name, servers in names.items():
         if len(servers) > 1:
             errors.append(
@@ -83,6 +84,30 @@ def check_atomic(server):
             id="xprez_mcp.E005",
         )
     ]
+
+
+def check_schemas(server):
+    """Every tool's input schema builds: one that does not would fail
+    ``tools/list`` for the whole server."""
+    try:
+        tools = list(server.catalog["tool"].values())
+    except ImproperlyConfigured:
+        return []  # reported by check_names or when the catalog is used
+    errors = []
+    for item in tools:
+        try:
+            item.spec.input_schema
+        except ImproperlyConfigured as error:
+            errors.append(
+                checks.Error(
+                    f"MCP server {server.name!r}, tool {item.name}: {error}",
+                    hint="Use a supported type annotation, or pass "
+                    "@tool(input_schema=...).",
+                    obj=server,
+                    id="xprez_mcp.E006",
+                )
+            )
+    return errors
 
 
 def check_names(server):
