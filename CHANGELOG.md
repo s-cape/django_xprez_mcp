@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.9.1 (2026-11-26)
 
 Fixes from a review of the library.
 
