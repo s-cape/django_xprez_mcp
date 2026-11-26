@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.9.0 (unreleased)
+## 0.9.0 (2026-11-26)
 
 Helpers for providers of hand-written tools, all opt-in.
 
