@@ -15,6 +15,7 @@ DEFAULTS = {
     "ALLOW_WRITES": [],
     "LIST_PAGE_SIZE": None,
     "RELATED_LABELS": False,
+    "ATOMIC_WRITES": False,
 }
 
 

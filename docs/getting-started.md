@@ -191,7 +191,7 @@ must be able to log in there. Then:
   `xprez_mcp.contrib.oauth.views.ConnectionsView`, or with
   `connections.for_user()` / `connections.disconnect()` in a view of your
   own.
-- Schedule `./manage.py mcp_oauth_cleanup` daily (cron, a systemd timer,
+- Schedule `./manage.py mcp_cleanup` hourly (cron, a systemd timer,
   Celery beat): nothing runs it for you. Without it, expired rows and
   clients that registered but never connected pile up.
 - Behind a proxy that terminates HTTPS, set `SECURE_PROXY_SSL_HEADER` so
@@ -285,6 +285,41 @@ curl -s https://example.com/mcp/ \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc": "2.0", "id": 1, "method": "tools/list"}'
 ```
+
+## Test your tools
+
+`McpTestCase` calls the endpoint as a client would, signing the user in with
+the server's own authentication (an OAuth or stored token made directly in
+the database, or the session):
+
+```python
+# myapp/tests.py
+from django.contrib.auth import get_user_model
+
+from xprez_mcp.testing import McpTestCase
+
+from .models import Note
+
+
+class NoteToolTests(McpTestCase):
+    @classmethod
+    def setUpTestData(cls):
+        cls.mcp_user = get_user_model().objects.create_user("alice")
+
+    def test_ping(self):
+        structured, result = self.call("ping")
+        self.assertEqual(result["content"][0]["text"], "pong")
+
+    def test_other_users_note(self):
+        bob = get_user_model().objects.create_user("bob")
+        note = Note.objects.create(owner=bob, title="Private")
+        error = self.assertToolError("notes_get", id=note.pk)
+        self.assertIn("No note", error)
+```
+
+It talks to the default server; set `mcp_url = "/other/mcp/"` for another.
+`rpc(method, params, user=..., token=...)` sends any other request and
+returns the response.
 
 ## Next
 

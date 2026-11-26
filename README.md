@@ -39,7 +39,7 @@ Claude Code, Cursor), signs in with the site's login and clicks "Allow".
 3. Set `XPREZ_MCP["AUTHENTICATION"] = ["xprez_mcp.contrib.oauth.auth.access_token"]`.
 
 Override `xprez_mcp/oauth/base.html` to style the consent page, and schedule
-`manage.py mcp_oauth_cleanup` daily.
+`manage.py mcp_cleanup` hourly.
 
 **Bearer tokens** (`xprez_mcp.contrib.tokens`): the user creates a key under
 "MCP tokens" in the admin and the client sends `Authorization: Bearer <key>`.

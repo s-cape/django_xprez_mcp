@@ -41,7 +41,7 @@ repeatedly and quickly. Go through this list before exposing a server.
   fetches are rate limited by it); behind a proxy, set it in middleware or
   the WSGI server. With several workers, the default cache is shared
   (Redis, Memcached, database), or each worker counts on its own.
-- [ ] `mcp_oauth_cleanup` runs daily.
+- [ ] `mcp_cleanup` runs hourly.
 - [ ] `DYNAMIC_REGISTRATION` is off if only clients with a metadata document
   (or pre-registered ones) should connect.
 
